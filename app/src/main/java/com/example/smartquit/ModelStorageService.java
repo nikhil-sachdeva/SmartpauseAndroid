@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.util.Log;
 
 import com.google.gson.Gson;
+import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -41,29 +42,51 @@ public class ModelStorageService {
                 Gson gson = new Gson();
                 String baselineStatsJson = gson.toJson(modelData.baseline_stats);
                 editor.putString(KEY_BASELINE_STATS, baselineStatsJson);
-                Log.d(TAG, "✅ Saved baseline stats");
+                Log.d(TAG, "✅ Saved baseline stats: median_session=" + modelData.baseline_stats.median_session_usage_seconds + "s, epsilon=" + modelData.baseline_stats.epsilon);
             }
             
             editor.apply();
             
-            // Save agent data to file
+            // Save agent data (Q-table) to file
             if (modelData.agent_data != null && !modelData.agent_data.isEmpty()) {
                 File modelFile = new File(context.getFilesDir(), AGENT_DATA_FILENAME);
                 try (FileOutputStream fos = new FileOutputStream(modelFile)) {
                     fos.write(modelData.agent_data.getBytes());
-                    Log.d(TAG, "✅ Saved agent data to file: " + modelFile.getAbsolutePath());
+                    Log.d(TAG, "✅ Saved Q-table data to file: " + modelFile.getAbsolutePath());
+                    Log.d(TAG, "   Q-table format: " + modelData.format);
+                    Log.d(TAG, "   Q-table size: " + modelData.agent_data.length() + " characters");
                 }
+            } else {
+                Log.w(TAG, "⚠️  No agent data (Q-table) received from server");
             }
             
             Log.d(TAG, "✅ Model and baseline stats saved successfully");
             Log.d(TAG, "   Model version: " + modelData.model_version);
             Log.d(TAG, "   Updated at: " + modelData.updated_at);
             
+            // Notify SessionTrackerService about model update
+            notifySessionTrackerService(context);
+            
         } catch (Exception e) {
             Log.e(TAG, "❌ Error saving model", e);
         }
     }
     
+    /**
+     * Notify SessionTrackerService that model data has been updated
+     * This will refresh cached Q-table and baseline stats
+     */
+    private static void notifySessionTrackerService(Context context) {
+        try {
+            // Send broadcast to SessionTrackerService to refresh cached data
+            android.content.Intent refreshIntent = new android.content.Intent("com.example.smartquit.MODEL_UPDATED");
+            context.sendBroadcast(refreshIntent);
+            Log.d(TAG, "✅ Sent model update broadcast to SessionTrackerService");
+        } catch (Exception e) {
+            Log.e(TAG, "Error sending model update broadcast", e);
+        }
+    }
+
     /**
      * Load baseline stats from local storage
      */
@@ -82,6 +105,21 @@ public class ModelStorageService {
             Log.e(TAG, "❌ Error loading baseline stats", e);
         }
         return null;
+    }
+    
+    /**
+     * Get epsilon value for epsilon-greedy Q-learning
+     * @return epsilon value (between 0 and 1), or 0.1 as default if not available
+     */
+    public static float getEpsilon(Context context) {
+        RetrofitApiService.BaselineStats stats = getBaselineStats(context);
+        if (stats != null) {
+            Log.d(TAG, "✅ Retrieved epsilon from baseline stats: " + stats.epsilon);
+            return stats.epsilon;
+        }
+        // Default epsilon if not available
+        Log.w(TAG, "⚠️  No baseline stats available, using default epsilon: 0.1");
+        return 0.1f;
     }
     
     /**
@@ -128,6 +166,30 @@ public class ModelStorageService {
         return getBaselineStats(context) != null && getAgentData(context) != null;
     }
     
+    /**
+     * Validate that both baseline stats and Q-table are available
+     */
+    public static boolean isCompleteModelAvailable(Context context) {
+        return getBaselineStats(context) != null && getAgentData(context) != null;
+    }
+
+    /**
+     * Get Q-table statistics for debugging
+     */
+    public static String getQTableInfo(Context context) {
+        try {
+            String agentData = getAgentData(context);
+            if (agentData != null && !agentData.isEmpty()) {
+                // Try to parse as JSON to get basic info
+                JSONObject qTable = new JSONObject(agentData);
+                return "Q-table loaded with " + qTable.length() + " states";
+            }
+        } catch (Exception e) {
+            return "Error parsing Q-table: " + e.getMessage();
+        }
+        return "No Q-table available";
+    }
+
     /**
      * Clear local model data
      */

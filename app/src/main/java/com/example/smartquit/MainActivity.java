@@ -9,9 +9,11 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.PowerManager;
 import android.provider.Settings;
 import android.util.Log;
 import android.view.View;
@@ -33,6 +35,8 @@ import java.util.SortedMap;
 import java.util.TreeMap;
 
 public class MainActivity extends AppCompatActivity {
+
+    private static final String TAG = "MainActivity";
 
     private AppDatabase db;
     private static final String PREFS_NAME = "SmartQuitPrefs";
@@ -88,20 +92,40 @@ public class MainActivity extends AppCompatActivity {
         if (grantAccessButton != null) {
             grantAccessButton.setVisibility(View.GONE);
         }
+        
+        // Request battery optimization exemption for reliable background service
+        requestBatteryOptimizationExemption();
 
         // Start the background session tracker service
         Intent serviceIntent = new Intent(this, SessionTrackerService.class);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent);
-        } else {
-            startService(serviceIntent);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent);
+            } else {
+                startService(serviceIntent);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error starting SessionTrackerService: " + e.getMessage());
+            // Fallback to regular service if foreground service fails
+            try {
+                startService(serviceIntent);
+            } catch (Exception fallbackError) {
+                Log.e(TAG, "Error starting SessionTrackerService as regular service: " + fallbackError.getMessage());
+            }
         }
 
         // Start the session upload scheduler service
         Intent uploadServiceIntent = new Intent(this, SessionUploadService.class);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        // Android 12+ restricts starting foreground services from background
+        // SessionUploadService only schedules jobs, so it doesn't need foreground status
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // Android 12+: Start as regular service to avoid restrictions
+            startService(uploadServiceIntent);
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // Android 8-11: Can use foreground service
             startForegroundService(uploadServiceIntent);
         } else {
+            // Android < 8: Regular service
             startService(uploadServiceIntent);
         }
 
@@ -132,17 +156,34 @@ public class MainActivity extends AppCompatActivity {
                 
                 // Start the background services
                 Intent serviceIntent = new Intent(this, SessionTrackerService.class);
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(serviceIntent);
-                } else {
-                    startService(serviceIntent);
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        startForegroundService(serviceIntent);
+                    } else {
+                        startService(serviceIntent);
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Error starting SessionTrackerService in onResume: " + e.getMessage());
+                    // Fallback to regular service if foreground service fails
+                    try {
+                        startService(serviceIntent);
+                    } catch (Exception fallbackError) {
+                        Log.e(TAG, "Error starting SessionTrackerService as regular service in onResume: " + fallbackError.getMessage());
+                    }
                 }
 
                 // Start the session upload scheduler service
                 Intent uploadServiceIntent = new Intent(this, SessionUploadService.class);
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                // Android 12+ restricts starting foreground services from background
+                // SessionUploadService only schedules jobs, so it doesn't need foreground status
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    // Android 12+: Start as regular service to avoid restrictions
+                    startService(uploadServiceIntent);
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    // Android 8-11: Can use foreground service
                     startForegroundService(uploadServiceIntent);
                 } else {
+                    // Android < 8: Regular service
                     startService(uploadServiceIntent);
                 }
                 
@@ -202,5 +243,29 @@ public class MainActivity extends AppCompatActivity {
     private void openUsageAccessSettings() {
         Intent intent = new Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS);
         startActivity(intent);
+    }
+    
+    /**
+     * Request battery optimization exemption to keep the service running
+     * This prevents Android from stopping the service to save battery
+     */
+    private void requestBatteryOptimizationExemption() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            String packageName = getPackageName();
+            
+            if (powerManager != null && !powerManager.isIgnoringBatteryOptimizations(packageName)) {
+                Log.d(TAG, "Battery optimization is enabled - requesting exemption");
+                try {
+                    Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                    intent.setData(Uri.parse("package:" + packageName));
+                    startActivity(intent);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to request battery optimization exemption: " + e.getMessage());
+                }
+            } else {
+                Log.d(TAG, "Battery optimization already disabled for this app");
+            }
+        }
     }
 }

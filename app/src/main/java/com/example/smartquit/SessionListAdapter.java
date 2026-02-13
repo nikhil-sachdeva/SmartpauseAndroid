@@ -30,6 +30,7 @@ public class SessionListAdapter extends ArrayAdapter<AppSession> {
         TextView dateTextView = convertView.findViewById(R.id.dateTextView);
         TextView vibrationsTextView = convertView.findViewById(R.id.vibrationsTextView);
         TextView complianceTextView = convertView.findViewById(R.id.complianceTextView);
+        TextView groupIdTextView = convertView.findViewById(R.id.groupIdTextView);
 
         appNameTextView.setText("App: " + session.appName);
         startTimeTextView.setText("Start: " + session.startTime);
@@ -38,6 +39,7 @@ public class SessionListAdapter extends ArrayAdapter<AppSession> {
         dateTextView.setText("Date: " + session.date);
         vibrationsTextView.setText("Vibrations: " + session.numVibrations);
         complianceTextView.setText("User Complied: " + (session.userComplied ? "Yes" : "No"));
+        groupIdTextView.setText("Group: " + session.groupId);
 
         return convertView;
     }

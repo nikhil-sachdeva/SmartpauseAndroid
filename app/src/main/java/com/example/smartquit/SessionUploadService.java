@@ -40,15 +40,41 @@ public class SessionUploadService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         Log.d(TAG, "SessionUploadService started");
         
-        // Start foreground with notification
-        Notification notification = createNotification();
-        startForeground(NOTIFICATION_ID, notification);
+        // For Android 12+ (API 31), avoid starting foreground service from background
+        // This service only needs to schedule the job, then it can stop
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            Log.d(TAG, "Android 12+ detected - running as regular service to avoid foreground restrictions");
+            // Just schedule the job and stop immediately
+            BootReceiver.scheduleDaily3AMUpload(this);
+            stopSelf();
+            return START_NOT_STICKY;
+        } else {
+            // For older Android versions, we can still use foreground service
+            Notification notification = createNotification();
+            try {
+                startForeground(NOTIFICATION_ID, notification);
+                Log.d(TAG, "Started as foreground service (Android < 12)");
+            } catch (Exception e) {
+                Log.e(TAG, "Error starting foreground service: " + e.getMessage());
+                // If foreground fails, continue as regular service
+            }
+        }
         
         // Schedule the upload job
         BootReceiver.scheduleDaily3AMUpload(this);
         
-        // Service can stop after scheduling
-        return START_STICKY;
+        // Stop the service after scheduling (job scheduler will handle uploads)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            // Give a moment for foreground service to establish, then stop
+            new android.os.Handler().postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    stopSelf();
+                }
+            }, 1000);
+        }
+        
+        return START_NOT_STICKY;
     }
 
     @Nullable

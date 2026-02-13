@@ -77,14 +77,28 @@ public interface RetrofitApiService {
         public float duration_seconds;
         public int num_vibrations;
         public boolean user_complied;
+        public int group_id;
     }
 
     /**
-     * Daily upload request with all sessions from a day
+     * Query data for upload (vibration decision points)
+     */
+    class QueryData {
+        public int group_id;
+        public String timestamp;
+        public String current_app;
+        public java.util.List<Integer> state;  // State array as list of integers
+        public int action;
+        public int compliance;
+    }
+
+    /**
+     * Daily upload request with all sessions and queries from a day
      */
     class DailyUpload {
         public String user_id;
         public java.util.List<Session> sessions;
+        public java.util.List<QueryData> queries;  // Add queries to upload
         public String date; // YYYY-MM-DD format
     }
 
@@ -106,9 +120,10 @@ public interface RetrofitApiService {
      * Baseline statistics for user
      */
     class BaselineStats {
-        public float median_target_usage_minutes;
-        public float short_session_threshold_seconds;
+        public float median_target_app_usage_seconds;
+        public float median_session_usage_seconds;
         public float query_interval_seconds;
+        public float epsilon;  // For epsilon-greedy Q-learning
     }
 
     /**

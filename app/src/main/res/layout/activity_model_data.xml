@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="16dp"
+    tools:context=".ModelDataActivity">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/titleTextView"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Model Data Dashboard"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:layout_gravity="center"
+            android:layout_marginBottom="20dp" />
+
+        <!-- Current User Display Section -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="16dp"
+            android:background="@android:color/background_light"
+            android:padding="12dp">
+
+            <TextView
+                android:id="@+id/currentUserIdText"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Current User: Loading..."
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:textColor="@android:color/holo_blue_dark" />
+
+            <Button
+                android:id="@+id/loadDataButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Refresh Data"
+                android:backgroundTint="@android:color/holo_blue_dark" />
+
+        </LinearLayout>
+
+        <!-- Loading Indicator -->
+        <TextView
+            android:id="@+id/loadingIndicator"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Loading model data..."
+            android:textColor="@android:color/darker_gray"
+            android:layout_gravity="center"
+            android:layout_marginBottom="16dp"
+            android:visibility="gone" />
+
+        <!-- Error Message -->
+        <TextView
+            android:id="@+id/errorMessage"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@android:color/holo_red_dark"
+            android:background="@android:color/background_light"
+            android:padding="16dp"
+            android:layout_marginBottom="16dp"
+            android:visibility="gone" />
+
+        <!-- Content Layout -->
+        <LinearLayout
+            android:id="@+id/contentLayout"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <!-- Baseline Statistics Section -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Baseline Statistics"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:textColor="@android:color/holo_blue_dark"
+                android:layout_marginBottom="16dp" />
+
+            <LinearLayout
+                android:id="@+id/statsContainer"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:layout_marginBottom="24dp" />
+
+            <!-- Sessions Data Section -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="User Sessions Data"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:textColor="@android:color/holo_blue_dark"
+                android:layout_marginBottom="16dp" />
+
+            <ListView
+                android:id="@+id/sessionsListView"
+                android:layout_width="match_parent"
+                android:layout_height="200dp"
+                android:background="@android:color/background_light"
+                android:divider="@android:color/darker_gray"
+                android:dividerHeight="1dp"
+                android:layout_marginBottom="24dp" />
+
+            <!-- Q-Table States Dropdown Section -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Q-Table States Explorer"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:textColor="@android:color/holo_blue_dark"
+                android:layout_marginBottom="16dp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Select a state to view its Q-values:"
+                android:textSize="14sp"
+                android:textColor="@android:color/darker_gray"
+                android:layout_marginBottom="8dp" />
+
+            <Spinner
+                android:id="@+id/qtableStatesSpinner"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="16dp"
+                android:background="@android:drawable/btn_dropdown"
+                android:padding="12dp" />
+
+            <ScrollView
+                android:layout_width="match_parent"
+                android:layout_height="200dp"
+                android:layout_marginBottom="24dp"
+                android:background="@android:color/background_light"
+                android:padding="12dp">
+
+                <TextView
+                    android:id="@+id/selectedStateDetails"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Select a state from the dropdown to view details"
+                    android:textSize="14sp"
+                    android:textColor="@android:color/black"
+                    android:fontFamily="monospace" />
+
+            </ScrollView>
+
+            <!-- Agent Data Section -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Agent Data"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:textColor="@android:color/holo_blue_dark"
+                android:layout_marginBottom="16dp" />
+
+            <ListView
+                android:id="@+id/agentDataListView"
+                android:layout_width="match_parent"
+                android:layout_height="200dp"
+                android:background="@android:color/background_light"
+                android:divider="@android:color/darker_gray"
+                android:dividerHeight="1dp"
+                android:layout_marginBottom="24dp" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+</ScrollView>

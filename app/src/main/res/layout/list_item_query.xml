@@ -7,15 +7,15 @@
     android:background="?attr/selectableItemBackground">
 
     <TextView
-        android:id="@+id/appNameTextView"
+        android:id="@+id/groupIdTextView"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:textSize="16sp"
         android:textStyle="bold"
-        android:textColor="@android:color/black" />
+        android:textColor="@android:color/holo_red_dark" />
 
     <TextView
-        android:id="@+id/dateTextView"
+        android:id="@+id/timestampTextView"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:textSize="14sp"
@@ -23,32 +23,24 @@
         android:layout_marginTop="4dp" />
 
     <TextView
-        android:id="@+id/startTimeTextView"
+        android:id="@+id/currentAppTextView"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:textSize="12sp"
-        android:textColor="@android:color/darker_gray"
-        android:layout_marginTop="4dp" />
-
-    <TextView
-        android:id="@+id/endTimeTextView"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:textSize="12sp"
-        android:textColor="@android:color/darker_gray"
-        android:layout_marginTop="4dp" />
-
-    <TextView
-        android:id="@+id/durationTextView"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:textSize="12sp"
+        android:textSize="14sp"
         android:textStyle="bold"
+        android:textColor="@android:color/black"
+        android:layout_marginTop="4dp" />
+
+    <TextView
+        android:id="@+id/stateTextView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textSize="12sp"
         android:textColor="@android:color/holo_blue_dark"
         android:layout_marginTop="4dp" />
 
     <TextView
-        android:id="@+id/vibrationsTextView"
+        android:id="@+id/actionTextView"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:textSize="12sp"
@@ -61,15 +53,6 @@
         android:layout_height="wrap_content"
         android:textSize="12sp"
         android:textColor="@android:color/holo_green_dark"
-        android:layout_marginTop="4dp" />
-
-    <TextView
-        android:id="@+id/groupIdTextView"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:textSize="12sp"
-        android:textStyle="bold"
-        android:textColor="@android:color/holo_red_dark"
         android:layout_marginTop="4dp" />
 
 </LinearLayout>

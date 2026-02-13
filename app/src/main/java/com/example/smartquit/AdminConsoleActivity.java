@@ -3,6 +3,7 @@ package com.example.smartquit;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.View;
 import android.widget.Button;
 import android.widget.ListView;
 import android.widget.TextView;
@@ -14,6 +15,8 @@ import android.content.Context;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.SwitchCompat;
 
+import com.google.android.material.tabs.TabLayout;
+
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.List;
@@ -21,10 +24,13 @@ import java.util.List;
 public class AdminConsoleActivity extends AppCompatActivity {
 
     private ListView sessionsListView;
+    private ListView queriesListView;
+    private TabLayout tabLayout;
     private TextView nextUploadTimerView;
     private TextView monitoredAppsTextView;
     private AppDatabase db;
     private SessionListAdapter adapter;
+    private QueryListAdapter queryAdapter;
     private Handler handler;
     private Runnable timerRunnable;
     private SwitchCompat testModeToggle;
@@ -37,16 +43,55 @@ public class AdminConsoleActivity extends AppCompatActivity {
         setContentView(R.layout.activity_admin_console);
 
         sessionsListView = findViewById(R.id.sessionsListView);
+        queriesListView = findViewById(R.id.queriesListView);
+        tabLayout = findViewById(R.id.tabLayout);
         nextUploadTimerView = findViewById(R.id.nextUploadTimerView);
         monitoredAppsTextView = findViewById(R.id.monitoredAppsTextView);
         db = AppDatabase.getDatabase(this);
         handler = new Handler(Looper.getMainLooper());
+
+        // Set up tabs
+        tabLayout.addTab(tabLayout.newTab().setText("Sessions"));
+        tabLayout.addTab(tabLayout.newTab().setText("Queries"));
+
+        // Set up tab selection listener
+        tabLayout.addOnTabSelectedListener(new TabLayout.OnTabSelectedListener() {
+            @Override
+            public void onTabSelected(TabLayout.Tab tab) {
+                if (tab.getPosition() == 0) {
+                    // Show sessions
+                    sessionsListView.setVisibility(View.VISIBLE);
+                    queriesListView.setVisibility(View.GONE);
+                } else {
+                    // Show queries
+                    sessionsListView.setVisibility(View.GONE);
+                    queriesListView.setVisibility(View.VISIBLE);
+                }
+            }
+
+            @Override
+            public void onTabUnselected(TabLayout.Tab tab) {
+            }
+
+            @Override
+            public void onTabReselected(TabLayout.Tab tab) {
+            }
+        });
 
         // Set up View Logs button
         Button viewLogsButton = findViewById(R.id.viewLogsButton);
         if (viewLogsButton != null) {
             viewLogsButton.setOnClickListener(v -> {
                 Intent intent = new Intent(AdminConsoleActivity.this, LogsActivity.class);
+                startActivity(intent);
+            });
+        }
+
+        // Set up Model Data button
+        Button modelDataButton = findViewById(R.id.modelDataButton);
+        if (modelDataButton != null) {
+            modelDataButton.setOnClickListener(v -> {
+                Intent intent = new Intent(AdminConsoleActivity.this, ModelDataActivity.class);
                 startActivity(intent);
             });
         }
@@ -66,6 +111,7 @@ public class AdminConsoleActivity extends AppCompatActivity {
 
         loadMonitoredApps();
         loadSessions();
+        loadQueries();
         startUploadCountdown();
     }
 
@@ -79,6 +125,21 @@ public class AdminConsoleActivity extends AppCompatActivity {
                 } else {
                     adapter = new SessionListAdapter(AdminConsoleActivity.this, new ArrayList<>(sessions));
                     sessionsListView.setAdapter(adapter);
+                }
+            });
+        }).start();
+    }
+
+    private void loadQueries() {
+        new Thread(() -> {
+            List<Query> queries = db.queryDao().getAllQueries();
+            
+            runOnUiThread(() -> {
+                if (queries.isEmpty()) {
+                    Toast.makeText(AdminConsoleActivity.this, "No queries recorded yet.", Toast.LENGTH_SHORT).show();
+                } else {
+                    queryAdapter = new QueryListAdapter(AdminConsoleActivity.this, new ArrayList<>(queries));
+                    queriesListView.setAdapter(queryAdapter);
                 }
             });
         }).start();

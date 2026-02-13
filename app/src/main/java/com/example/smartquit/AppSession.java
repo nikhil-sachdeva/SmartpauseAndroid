@@ -16,6 +16,7 @@ public class AppSession {
     public String date;
     public int numVibrations;  // Number of vibrations during this session
     public boolean userComplied;  // Whether user left app during vibration
+    public int groupId;  // Group ID for session grouping (starts at 1)
 
     public AppSession(String userId, String appName, String startTime, String endTime, long durationSeconds, String date) {
         this.userId = userId;
@@ -26,6 +27,7 @@ public class AppSession {
         this.date = date;
         this.numVibrations = 0;
         this.userComplied = false;
+        this.groupId = 1;
     }
 
     @Override
@@ -40,6 +42,7 @@ public class AppSession {
                 ", date='" + date + '\'' +
                 ", numVibrations=" + numVibrations +
                 ", userComplied=" + userComplied +
+                ", groupId=" + groupId +
                 '}';
     }
 }

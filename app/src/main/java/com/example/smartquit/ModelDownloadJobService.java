@@ -88,9 +88,25 @@ public class ModelDownloadJobService extends JobService {
                         Log.d(TAG, "✅ Model download successful!");
                         Log.d(TAG, "   Model version: " + modelData.model_version);
                         Log.d(TAG, "   Updated at: " + modelData.updated_at);
+                        Log.d(TAG, "   Data format: " + modelData.format);
+                        Log.d(TAG, "   Baseline stats available: " + (modelData.baseline_stats != null));
+                        Log.d(TAG, "   Agent data available: " + (modelData.agent_data != null && !modelData.agent_data.isEmpty()));
+                        
+                        if (modelData.baseline_stats != null) {
+                            Log.d(TAG, "   Baseline stats: median_session=" + modelData.baseline_stats.median_session_usage_seconds + "s, epsilon=" + modelData.baseline_stats.epsilon);
+                        }
+                        
+                        if (modelData.agent_data != null && !modelData.agent_data.isEmpty()) {
+                            Log.d(TAG, "   Q-table size: " + modelData.agent_data.length() + " characters");
+                        }
                         
                         // Save model and baseline stats locally
                         ModelStorageService.saveModel(ModelDownloadJobService.this, modelData);
+                        
+                        // Validate that model was saved correctly
+                        boolean isComplete = ModelStorageService.isCompleteModelAvailable(ModelDownloadJobService.this);
+                        Log.d(TAG, "   Model completeness check: " + (isComplete ? "✅ Complete" : "⚠️  Incomplete"));
+                        Log.d(TAG, "   " + ModelStorageService.getQTableInfo(ModelDownloadJobService.this));
                         
                         Log.d(TAG, "========== MODEL DOWNLOAD JOB COMPLETED SUCCESSFULLY ==========\n");
                         retryCount = 0; // Reset retry count on success

@@ -80,6 +80,15 @@ public class SessionUploadJobService extends JobService {
 
             Log.d(TAG, "✅ Found " + sessions.size() + " sessions to upload");
 
+            // Get ALL queries from local database
+            List<Query> queries = db.queryDao().getAllQueries();
+            
+            if (queries != null && !queries.isEmpty()) {
+                Log.d(TAG, "✅ Found " + queries.size() + " queries to upload");
+            } else {
+                Log.d(TAG, "⚠️ No queries to upload.");
+            }
+
             // Get today's date for the upload
             String todayDate = getTodayDate();
             Log.d(TAG, "Upload date: " + todayDate);
@@ -94,6 +103,7 @@ public class SessionUploadJobService extends JobService {
                 session.duration_seconds = (float) appSession.durationSeconds;
                 session.num_vibrations = appSession.numVibrations;  // Use actual count
                 session.user_complied = appSession.userComplied;  // Use actual compliance
+                session.group_id = appSession.groupId;  // Include group ID
                 apiSessions.add(session);
                 
                 Log.d(TAG, "  Session: " + appSession.appName);
@@ -103,6 +113,43 @@ public class SessionUploadJobService extends JobService {
                 Log.d(TAG, "    Date: " + appSession.date);
                 Log.d(TAG, "    Vibrations: " + appSession.numVibrations);
                 Log.d(TAG, "    User Complied: " + appSession.userComplied);
+                Log.d(TAG, "    Group ID: " + appSession.groupId);
+            }
+
+            // Convert Query to QueryData (API model)
+            List<RetrofitApiService.QueryData> apiQueries = new ArrayList<>();
+            if (queries != null) {
+                for (Query query : queries) {
+                    RetrofitApiService.QueryData queryData = new RetrofitApiService.QueryData();
+                    queryData.group_id = query.groupId;
+                    queryData.timestamp = query.timestamp;
+                    queryData.current_app = query.currentApp;
+                    
+                    // Parse state string "[0,1,2,1]" to List<Integer>
+                    try {
+                        String stateStr = query.state.replaceAll("[\\[\\]\\s]", "");
+                        String[] stateParts = stateStr.split(",");
+                        queryData.state = new ArrayList<>();
+                        for (String part : stateParts) {
+                            queryData.state.add(Integer.parseInt(part));
+                        }
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error parsing state for query: " + query.state, e);
+                        // Provide default state if parsing fails
+                        queryData.state = java.util.Arrays.asList(0, 0, 0, 0);
+                    }
+                    
+                    queryData.action = query.action;
+                    queryData.compliance = query.compliance;
+                    apiQueries.add(queryData);
+                    
+                    Log.d(TAG, "  Query: " + query.currentApp);
+                    Log.d(TAG, "    Group ID: " + query.groupId);
+                    Log.d(TAG, "    Timestamp: " + query.timestamp);
+                    Log.d(TAG, "    State: " + query.state);
+                    Log.d(TAG, "    Action: " + query.action);
+                    Log.d(TAG, "    Compliance: " + query.compliance);
+                }
             }
 
             // Create upload request
@@ -110,8 +157,9 @@ public class SessionUploadJobService extends JobService {
             uploadRequest.user_id = userId;
             uploadRequest.date = todayDate;
             uploadRequest.sessions = apiSessions;
+            uploadRequest.queries = apiQueries;
 
-            Log.d(TAG, "📤 Uploading " + apiSessions.size() + " sessions to API...");
+            Log.d(TAG, "📤 Uploading " + apiSessions.size() + " sessions and " + apiQueries.size() + " queries to API...");
             Log.d(TAG, "Upload request date format: " + todayDate);
             Log.d(TAG, "Sample session start_time format: " + (apiSessions.size() > 0 ? apiSessions.get(0).start_time : "N/A"));
 
@@ -132,18 +180,19 @@ public class SessionUploadJobService extends JobService {
                         Log.d(TAG, "✅ Upload successful!");
                         Log.d(TAG, "Response: " + response.body());
                         
-                        // Clear ALL sessions from database after successful upload
+                        // Clear ALL sessions and queries from database after successful upload
                         new Thread(() -> {
                             try {
                                 db.appSessionDao().deleteAllSessions();
-                                Log.d(TAG, "✅ Cleared all sessions from database. Starting fresh for next day.");
+                                db.queryDao().deleteAllQueries();
+                                Log.d(TAG, "✅ Cleared all sessions and queries from database. Starting fresh for next day.");
                                 
                                 // Schedule next upload for tomorrow 3 AM
                                 scheduleNextUpload();
                                 
                                 Log.d(TAG, "========== UPLOAD JOB COMPLETED SUCCESSFULLY ==========\n");
                             } catch (Exception e) {
-                                Log.e(TAG, "❌ Error clearing sessions or scheduling next upload", e);
+                                Log.e(TAG, "❌ Error clearing data or scheduling next upload", e);
                                 Log.d(TAG, "========== UPLOAD JOB COMPLETED WITH WARNING ==========\n");
                             }
                         }).start();

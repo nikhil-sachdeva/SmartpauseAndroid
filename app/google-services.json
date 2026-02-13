@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "41662039819",
+    "project_id": "smartquit-b32c1",
+    "storage_bucket": "smartquit-b32c1.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:41662039819:android:e2c07577f883b1c6b7040e",
+        "android_client_info": {
+          "package_name": "com.example.smartquit"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCJPEJYh4oeHkH35wV1nyhRgPpa9Bewvsk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
