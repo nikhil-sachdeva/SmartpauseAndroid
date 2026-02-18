@@ -28,6 +28,10 @@ public class SessionUploadJobService extends JobService {
     private static final String API_BASE_URL = "https://smartquit-cyber.onrender.com";
     private static final String PREFS_NAME = "SmartQuitPrefs";
     private static final String KEY_USER_ID = "user_id";
+    private static final int MAX_RETRIES = 3;
+    private static final long RETRY_DELAY_MS = 30000; // 30 seconds between retries
+
+    private int retryCount = 0;
 
     @Override
     public boolean onStartJob(JobParameters params) {
@@ -66,6 +70,7 @@ public class SessionUploadJobService extends JobService {
 
             Log.d(TAG, "========== UPLOAD JOB STARTED ==========");
             Log.d(TAG, "User ID: " + userId);
+            Log.d(TAG, "Retry count: " + retryCount + "/" + MAX_RETRIES);
             Log.d(TAG, "Current time: " + System.currentTimeMillis());
 
             // Get ALL sessions from local database
@@ -171,14 +176,37 @@ public class SessionUploadJobService extends JobService {
                     .build();
 
             RetrofitApiService apiService = retrofit.create(RetrofitApiService.class);
-            Call<Object> call = apiService.uploadSessions(uploadRequest);
+            Call<RetrofitApiService.UploadResponse> call = apiService.uploadSessions(uploadRequest);
 
-            call.enqueue(new Callback<Object>() {
+            call.enqueue(new Callback<RetrofitApiService.UploadResponse>() {
                 @Override
-                public void onResponse(Call<Object> call, Response<Object> response) {
+                public void onResponse(Call<RetrofitApiService.UploadResponse> call, Response<RetrofitApiService.UploadResponse> response) {
                     if (response.isSuccessful()) {
+                        RetrofitApiService.UploadResponse uploadResponse = response.body();
                         Log.d(TAG, "✅ Upload successful!");
-                        Log.d(TAG, "Response: " + response.body());
+                        Log.d(TAG, "Response: " + uploadResponse.message);
+                                                // Save current day from upload response
+                        ModelStorageService.saveCurrentDay(SessionUploadJobService.this, uploadResponse.current_day);
+                        Log.d(TAG, "Current day: " + uploadResponse.current_day);
+                                                // Save updated Q-table and metadata from upload response
+                        if (uploadResponse.updated_model != null) {
+                            Log.d(TAG, "✅ Processing updated model from upload response...");
+                            ModelStorageService.saveQTableFromUpload(SessionUploadJobService.this, uploadResponse.updated_model);
+                            
+                            if (uploadResponse.model_training != null) {
+                                Log.d(TAG, "   Training result: " + uploadResponse.model_training.learned_transitions + " transitions learned");
+                                Log.d(TAG, "   Q-table size: " + uploadResponse.model_training.q_table_size + " states");
+                                Log.d(TAG, "   Training steps: " + uploadResponse.model_training.training_steps);
+                                Log.d(TAG, "   Checkpoint saved: " + uploadResponse.model_training.checkpoint_saved);
+                            }
+                            
+                            if (uploadResponse.updated_model.metadata != null) {
+                                Log.d(TAG, "   Updated epsilon: " + uploadResponse.updated_model.metadata.epsilon);
+                                Log.d(TAG, "   Model last updated: " + uploadResponse.updated_model.metadata.last_updated);
+                            }
+                        } else {
+                            Log.w(TAG, "⚠️ No updated model data in upload response");
+                        }
                         
                         // Clear ALL sessions and queries from database after successful upload
                         new Thread(() -> {
@@ -197,6 +225,7 @@ public class SessionUploadJobService extends JobService {
                             }
                         }).start();
                         
+                        retryCount = 0; // Reset retry count on success
                         jobFinished(params, false);
                     } else {
                         Log.e(TAG, "❌ Upload failed with HTTP code: " + response.code());
@@ -206,18 +235,36 @@ public class SessionUploadJobService extends JobService {
                         } catch (Exception e) {
                             Log.e(TAG, "Could not read error body", e);
                         }
-                        Log.e(TAG, "Will retry upload at next scheduled time...");
-                        Log.d(TAG, "========== UPLOAD JOB FAILED (WILL RETRY) ==========\n");
-                        jobFinished(params, true); // Reschedule
+                        
+                        handleUploadFailure(params);
                     }
                 }
 
                 @Override
-                public void onFailure(Call<Object> call, Throwable t) {
+                public void onFailure(Call<RetrofitApiService.UploadResponse> call, Throwable t) {
                     Log.e(TAG, "❌ Upload failed with network error: " + t.getMessage(), t);
-                    Log.e(TAG, "Will retry upload at next scheduled time...");
-                    Log.d(TAG, "========== UPLOAD JOB FAILED (WILL RETRY) ==========\n");
-                    jobFinished(params, true); // Reschedule on failure
+                    handleUploadFailure(params);
+                }
+
+                /**
+                 * Handle upload failure with retry logic
+                 */
+                private void handleUploadFailure(JobParameters params) {
+                    if (retryCount < MAX_RETRIES) {
+                        retryCount++;
+                        Log.d(TAG, "⏳ Retrying upload (" + retryCount + "/" + MAX_RETRIES + ") after " + RETRY_DELAY_MS + "ms");
+                        
+                        // Retry after delay
+                        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                            uploadSessions(params);
+                        }, RETRY_DELAY_MS);
+                    } else {
+                        Log.e(TAG, "❌ Upload failed after " + MAX_RETRIES + " retries");
+                        Log.e(TAG, "Will retry upload at next scheduled time...");
+                        Log.d(TAG, "========== UPLOAD JOB FAILED (WILL RETRY) ==========\n");
+                        retryCount = 0;
+                        jobFinished(params, true); // Reschedule
+                    }
                 }
             });
 

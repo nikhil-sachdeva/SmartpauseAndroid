@@ -173,6 +173,7 @@ public class ModelDataActivity extends AppCompatActivity {
             // Convert JSONObject to ModelDownloadResponse format for ModelStorageService
             RetrofitApiService.ModelDownloadResponse response = new RetrofitApiService.ModelDownloadResponse();
             response.user_id = modelData.optString("user_id");
+            response.current_day = modelData.optInt("current_day", 0);  // Extract current day
             response.model_version = modelData.optInt("model_version", 0);
             response.updated_at = modelData.optString("updated_at");
             response.format = modelData.optString("format", "json");
@@ -439,7 +440,7 @@ public class ModelDataActivity extends AppCompatActivity {
                 
                 if (stateKeys != null && stateKeys.length() > 0) {
                     agentStrings.add("=== Q-TABLE SAMPLE STATES ===");
-                    agentStrings.add("State Format: monitored_session_time_day");
+                    agentStrings.add("State Format: num_queries_num_vibrations_first_app_target_quarter_of_day");
                     agentStrings.add("Actions: 0=no_vibrate, 1=vibrate");
                     agentStrings.add("");
                     
@@ -505,7 +506,7 @@ public class ModelDataActivity extends AppCompatActivity {
                     for (int i = 0; i < keys.length(); i++) {
                         String stateKey = keys.getString(i);
                         String stateDescription = parseStateKey(stateKey);
-                        stateOptions.add(String.format("%s (%s)", stateDescription, stateKey));
+                        stateOptions.add(String.format("%s - %s", stateKey, stateDescription));
                         stateKeys.add(stateKey);
                     }
                 }
@@ -585,19 +586,19 @@ public class ModelDataActivity extends AppCompatActivity {
         try {
             String[] parts = stateKey.split("_");
             if (parts.length == 4) {
-                String monitored = parts[0].equals("1") ? "Monitored App" : "Non-monitored App";
-                String sessionLength = parts[1].equals("1") ? "Long Session" : "Short Session";
-                String timeOfDay = "";
-                switch (parts[2]) {
-                    case "0": timeOfDay = "Morning (0-6)"; break;
-                    case "1": timeOfDay = "Afternoon (6-12)"; break;
-                    case "2": timeOfDay = "Evening (12-18)"; break;
-                    case "3": timeOfDay = "Night (18-24)"; break;
-                    default: timeOfDay = "Unknown time";
+                String numQueries = "Queries: " + parts[0];
+                String numVibrations = "Vibrations: " + parts[1];
+                String firstAppTarget = parts[2].equals("1") ? "First app: Target" : "First app: Non-target";
+                String quarterOfDay;
+                switch (parts[3]) {
+                    case "0": quarterOfDay = "Quarter: Night/Early (0-6)"; break;
+                    case "1": quarterOfDay = "Quarter: Morning (6-12)"; break;
+                    case "2": quarterOfDay = "Quarter: Afternoon (12-18)"; break;
+                    case "3": quarterOfDay = "Quarter: Evening (18-24)"; break;
+                    default: quarterOfDay = "Quarter: Unknown";
                 }
-                String dayType = parts[3].equals("1") ? "Weekend" : "Weekday";
-                
-                return String.format("%s, %s, %s, %s", monitored, sessionLength, timeOfDay, dayType);
+
+                return String.format("%s, %s, %s, %s", numQueries, numVibrations, firstAppTarget, quarterOfDay);
             }
         } catch (Exception e) {
             // Fall back to raw state key

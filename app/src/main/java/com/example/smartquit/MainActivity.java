@@ -129,9 +129,6 @@ public class MainActivity extends AppCompatActivity {
             startService(uploadServiceIntent);
         }
 
-        // Schedule model download job independently at 3:30 AM
-        BootReceiver.scheduleDaily330AMModelDownload(this);
-
         // Set up the Admin Console button
         adminConsoleButton = findViewById(R.id.adminConsoleButton);
         if (adminConsoleButton != null) {
@@ -186,9 +183,6 @@ public class MainActivity extends AppCompatActivity {
                     // Android < 8: Regular service
                     startService(uploadServiceIntent);
                 }
-                
-                // Schedule model download job independently at 3:30 AM
-                BootReceiver.scheduleDaily330AMModelDownload(this);
                 
                 // Show admin console button
                 adminConsoleButton = findViewById(R.id.adminConsoleButton);

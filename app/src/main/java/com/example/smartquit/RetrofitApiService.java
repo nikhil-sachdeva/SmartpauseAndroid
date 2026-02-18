@@ -13,7 +13,7 @@ public interface RetrofitApiService {
     Call<RegistrationResponse> registerUser(@Body RegistrationRequest request);
     
     @POST("/api/v1/sessions/upload")
-    Call<Object> uploadSessions(@Body DailyUpload request);
+    Call<UploadResponse> uploadSessions(@Body DailyUpload request);
     
     @retrofit2.http.GET("/api/v1/model/download/{user_id}")
     Call<ModelDownloadResponse> downloadModel(@retrofit2.http.Path("user_id") String userId);
@@ -103,10 +103,59 @@ public interface RetrofitApiService {
     }
 
     /**
+     * Response from session upload endpoint (includes updated model)
+     */
+    class UploadResponse {
+        public String status;
+        public int sessions_count;
+        public int queries_count;
+        public int day_number;
+        public int current_day;  // Add current day field
+        public String date;
+        public boolean baseline_exists;
+        public BaselineStats baseline_stats;
+        public String message;
+        public ModelTraining model_training;
+        public UpdatedModel updated_model;
+    }
+
+    /**
+     * Training result information from upload
+     */
+    class ModelTraining {
+        public String status;
+        public int learned_transitions;
+        public int q_table_size;
+        public int training_steps;
+        public boolean checkpoint_saved;
+    }
+
+    /**
+     * Updated model data returned from upload
+     */
+    class UpdatedModel {
+        public java.util.Map<String, java.util.List<Float>> q_table;  // Q-table as JSON
+        public ModelMetadata metadata;
+    }
+
+    /**
+     * Model metadata including hyperparameters
+     */
+    class ModelMetadata {
+        public float epsilon;
+        public float alpha;
+        public float gamma;
+        public int training_steps;
+        public int q_table_states;
+        public String last_updated;
+    }
+
+    /**
      * Model download response from backend
      */
     class ModelDownloadResponse {
         public String user_id;
+        public int current_day;  // Add current day field
         public int model_version;
         public String updated_at;
         public BaselineStats baseline_stats;

@@ -19,7 +19,6 @@ public class BootReceiver extends BroadcastReceiver {
 
     private static final String TAG = "BootReceiver";
     private static final int UPLOAD_JOB_ID = 100;
-    private static final int MODEL_DOWNLOAD_JOB_ID = 101;
 
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -30,7 +29,6 @@ public class BootReceiver extends BroadcastReceiver {
         if (Intent.ACTION_BOOT_COMPLETED.equals(action) || Intent.ACTION_MY_PACKAGE_REPLACED.equals(action)) {
             Log.d(TAG, "Rescheduling jobs after boot/update");
             scheduleDaily3AMUpload(context);
-            scheduleDaily330AMModelDownload(context);
         }
     }
 
@@ -76,51 +74,6 @@ public class BootReceiver extends BroadcastReceiver {
         } else {
             Log.e(TAG, "❌ Failed to schedule upload job. Result: " + result);
             Log.d(TAG, "========== JOB SCHEDULING FAILED ==========\n");
-        }
-    }
-
-    /**
-     * Schedule daily model download at 3:30 AM local time (30 minutes after upload at 3 AM)
-     * Uses one-time jobs that reschedule themselves
-     */
-    public static void scheduleDaily330AMModelDownload(Context context) {
-        JobScheduler jobScheduler = (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
-        
-        // Calculate time until next 3:30 AM
-        Calendar calendar = Calendar.getInstance();
-        calendar.set(Calendar.HOUR_OF_DAY, 3);
-        calendar.set(Calendar.MINUTE, 30);
-
-
-        // If 3:30 AM has already passed today, schedule for tomorrow 3:30 AM
-        if (calendar.getTimeInMillis() <= System.currentTimeMillis()) {
-            calendar.add(Calendar.DAY_OF_YEAR, 1);
-        }
-
-        long delayMillis = calendar.getTimeInMillis() - System.currentTimeMillis();
-
-        Log.d("Download in"  + TAG, "========== SCHEDULING MODEL DOWNLOAD JOB ==========");
-        Log.d("Download in"  + TAG, "Current time: " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(System.currentTimeMillis()));
-        Log.d("Download in"  + TAG, "Next model download scheduled for: " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(calendar.getTime()));
-        Log.d("Download in"  + TAG, "Time until next download: " + (delayMillis / 1000 / 60) + " minutes");
-
-        // Use one-time job with minimum latency
-        JobInfo.Builder builder = new JobInfo.Builder(MODEL_DOWNLOAD_JOB_ID, new ComponentName(context, ModelDownloadJobService.class))
-                .setMinimumLatency(delayMillis)  // Wait until next 3:30 AM before first execution
-                .setPersisted(true);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            builder.setRequiresDeviceIdle(false);
-        }
-        JobInfo jobInfo = builder.build();
-        int result = jobScheduler.schedule(jobInfo);
-        
-        if (result == JobScheduler.RESULT_SUCCESS) {
-            Log.d(TAG, "✅ Model download job scheduled successfully");
-            Log.d(TAG, "✅ First download will occur at next 3:30 AM");
-            Log.d(TAG, "========== MODEL DOWNLOAD JOB SCHEDULED ==========\n");
-        } else {
-            Log.e(TAG, "❌ Failed to schedule model download job. Result: " + result);
-            Log.d(TAG, "========== MODEL DOWNLOAD JOB SCHEDULING FAILED ==========\n");
         }
     }
 }

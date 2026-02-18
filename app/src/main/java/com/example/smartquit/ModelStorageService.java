@@ -22,6 +22,7 @@ public class ModelStorageService {
     private static final String KEY_MODEL_VERSION = "model_version";
     private static final String KEY_MODEL_UPDATED = "model_updated_at";
     private static final String KEY_BASELINE_STATS = "baseline_stats";
+    private static final String KEY_CURRENT_DAY = "current_day";  // Add current day key
     private static final String MODEL_FILENAME = "smartquit_model.bin";
     private static final String AGENT_DATA_FILENAME = "agent_data.json";
     
@@ -36,6 +37,7 @@ public class ModelStorageService {
             // Save metadata
             editor.putInt(KEY_MODEL_VERSION, modelData.model_version);
             editor.putString(KEY_MODEL_UPDATED, modelData.updated_at);
+            editor.putInt(KEY_CURRENT_DAY, modelData.current_day);  // Save current day
             
             // Save baseline stats as JSON
             if (modelData.baseline_stats != null) {
@@ -188,6 +190,91 @@ public class ModelStorageService {
             return "Error parsing Q-table: " + e.getMessage();
         }
         return "No Q-table available";
+    }
+
+    /**
+     * Save Q-table and model metadata from upload response
+     */
+    public static void saveQTableFromUpload(Context context, RetrofitApiService.UpdatedModel updatedModel) {
+        try {
+            if (updatedModel.q_table == null || updatedModel.metadata == null) {
+                Log.w(TAG, "⚠️ No Q-table or metadata in upload response");
+                return;
+            }
+
+            // Convert Q-table Map to JSONObject
+            org.json.JSONObject qTableJson = new org.json.JSONObject();
+            for (String key : updatedModel.q_table.keySet()) {
+                java.util.List<Float> values = updatedModel.q_table.get(key);
+                org.json.JSONArray valueArray = new org.json.JSONArray();
+                for (Float value : values) {
+                    valueArray.put(value);
+                }
+                qTableJson.put(key, valueArray);
+            }
+
+            // Save Q-table data to file
+            File modelFile = new File(context.getFilesDir(), AGENT_DATA_FILENAME);
+            try (FileOutputStream fos = new FileOutputStream(modelFile)) {
+                fos.write(qTableJson.toString().getBytes());
+                Log.d(TAG, "✅ Saved updated Q-table from upload response: " + updatedModel.q_table.size() + " states");
+            }
+
+            // Update model metadata in SharedPreferences
+            SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            SharedPreferences.Editor editor = prefs.edit();
+            editor.putInt(KEY_MODEL_VERSION, updatedModel.metadata.training_steps);
+            editor.putString(KEY_MODEL_UPDATED, updatedModel.metadata.last_updated);
+            // Note: current_day comes from upload response, not updatedModel.metadata
+            
+            // Update baseline stats with new epsilon
+            RetrofitApiService.BaselineStats existingStats = getBaselineStats(context);
+            if (existingStats != null) {
+                // Preserve existing baseline stats but update epsilon
+                existingStats.epsilon = updatedModel.metadata.epsilon;
+                Gson gson = new Gson();
+                String baselineStatsJson = gson.toJson(existingStats);
+                editor.putString(KEY_BASELINE_STATS, baselineStatsJson);
+                Log.d(TAG, "✅ Updated epsilon from upload: " + updatedModel.metadata.epsilon);
+            }
+            
+            editor.apply();
+
+            // Notify SessionTrackerService about model update
+            notifySessionTrackerService(context);
+            
+            Log.d(TAG, "✅ Q-table and metadata updated from upload response");
+            Log.d(TAG, "   Q-table size: " + updatedModel.q_table.size() + " states");
+            Log.d(TAG, "   Training steps: " + updatedModel.metadata.training_steps);
+            Log.d(TAG, "   Epsilon: " + updatedModel.metadata.epsilon);
+            
+        } catch (Exception e) {
+            Log.e(TAG, "❌ Error saving Q-table from upload response", e);
+        }
+    }
+
+    /**
+     * Save current day from upload response
+     */
+    public static void saveCurrentDay(Context context, int currentDay) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        prefs.edit().putInt(KEY_CURRENT_DAY, currentDay).apply();
+        Log.d(TAG, "✅ Saved current day: " + currentDay);
+    }
+    
+    /**
+     * Get current day for vibration eligibility check
+     */
+    public static int getCurrentDay(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        return prefs.getInt(KEY_CURRENT_DAY, 0);  // Default to day 0
+    }
+    
+    /**
+     * Check if vibrations are allowed (current_day >= 2)
+     */
+    public static boolean areVibrationsAllowed(Context context) {
+        return getCurrentDay(context) >= 2;
     }
 
     /**

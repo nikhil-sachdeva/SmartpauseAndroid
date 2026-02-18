@@ -42,9 +42,8 @@ public class SessionTrackerService extends Service {
     private static final String CHANNEL_ID = "SessionTrackerChannel";
     private static final long VIBRATION_TRIGGER_DURATION = 30 * 1000; // 30 sec
     private static final long VIBRATION_DURATION = 15 * 1000; // 15 seconds continuous vibration
-    private static final long VIBRATION_CYCLE_INTERVAL = 60 * 1000; // 60 seconds (vibrate 15s, silent 45s, repeat)
+    private static final long VIBRATION_CYCLE_INTERVAL = 30 * 1000; // 30 seconds (vibrate 15s, silent 15s, repeat)
     private static final long GROUP_BREAK_THRESHOLD = 45 * 1000; // 45 seconds
-    private static final long TEST_MODE_GROUP_VIBRATION_THRESHOLD = 45 * 1000; // 45 seconds for test mode
     private static final String PREFS_NAME = "SmartQuitPrefs";
     private static final String KEY_APPS_TO_MONITOR = "apps_to_monitor";
     private static final String KEY_TEST_MODE = "test_mode";
@@ -56,7 +55,6 @@ public class SessionTrackerService extends Service {
     private long currentGroupStartTime = System.currentTimeMillis();  // Track when current group started
     private String currentGroupFirstApp = "NULL";  // Track the first app in the current group session
     private boolean hasVibrationOccurredInGroup = false;  // Track if vibration has occurred in current group
-    private int lastVibrationIntervalTriggered = 0;  // Track which 5-minute interval last triggered vibration (0, 1, 2, 3...)
     private int numVibrationsInGroup = 0;  // Track number of vibrations in current group (0-5 budget)
     
     // Vibration tracking
@@ -92,6 +90,7 @@ public class SessionTrackerService extends Service {
     private long targetAppSessionStartTime = 0;  // When current target app session started
     private boolean firstQueryTriggered = false;  // Whether first query at median time has occurred
     private long lastCountdownLogTime = 0;  // Last time we logged countdown (to avoid log flooding)
+    private long lastTestModeCountdownLogTime = 0;  // Last time we logged test-mode countdown
     
     private FirebaseAnalytics firebaseAnalytics;  // Firebase Analytics instance
     private FirebaseCrashlytics firebaseCrashlytics;  // Firebase Crashlytics instance
@@ -295,6 +294,7 @@ public class SessionTrackerService extends Service {
         if (!currentApp.equals(lastForegroundApp)) {
             lastForegroundApp = currentApp;
             lastAppChangeTime = System.currentTimeMillis();
+            lastTestModeCountdownLogTime = 0;
             
             // Start tracking target app usage in production mode (after first query)
             if (!getTestModePreference() && firstQueryTriggered && isAppInMonitorList(currentApp) && !isLauncherOrNull(currentApp)) {
@@ -313,8 +313,24 @@ public class SessionTrackerService extends Service {
         // Check if current app should trigger vibration (exclude NULL and launchers)
         if (!isLauncherOrNull(currentApp)) {
             long appDurationMillis = System.currentTimeMillis() - lastAppChangeTime;
+            if (getTestModePreference() && isAppInMonitorList(currentApp) && currentQueryId == -1
+                    && appDurationMillis < VIBRATION_TRIGGER_DURATION) {
+                long now = System.currentTimeMillis();
+                if (now - lastTestModeCountdownLogTime >= 5000) {
+                    long remainingSeconds = (VIBRATION_TRIGGER_DURATION - appDurationMillis) / 1000;
+                    Log.d("SessionTrackerService", "Test mode - Query countdown: " + remainingSeconds +
+                            "s remaining for app " + currentApp);
+                    lastTestModeCountdownLogTime = now;
+                }
+            }
             if (isAppInMonitorList(currentApp) && !isVibrating && shouldTriggerVibration(currentApp, appDurationMillis)) {
-                startVibration(currentApp);
+                // Check if vibrations are allowed (current_day >= 2)
+                if (ModelStorageService.areVibrationsAllowed(this)) {
+                    startVibration(currentApp);
+                } else {
+                    int currentDay = ModelStorageService.getCurrentDay(this);
+                    Log.d("SessionTrackerService", "Vibrations not allowed yet - current day: " + currentDay + " (need >= 2)");
+                }
             }
         }
     }
@@ -527,7 +543,6 @@ public class SessionTrackerService extends Service {
                 currentGroupFirstApp = appName;
             }
             hasVibrationOccurredInGroup = false;  // Reset vibration flag for new group
-            lastVibrationIntervalTriggered = 0;  // Reset interval tracking for new group
             lastThresholdInterval = 0;  // Reset threshold interval tracking for new group
             numVibrationsInGroup = 0;  // Reset vibration count for new group
             cumulativeTargetAppUsageSeconds = 0;  // Reset cumulative usage for new group
@@ -698,10 +713,17 @@ public class SessionTrackerService extends Service {
 
     /**
      * Determine if vibration should trigger based on config mode and app duration
-     * Test mode: vibrate at 5, 10, 15... minute intervals when monitored app is in foreground
+     * Test mode: When a new target app session starts, after 30 seconds, decide to vibrate with 20% probability
+     *           This query happens for EVERY new app, irrespective of group boundaries
      * Production mode: use Q-learning model at t, 2t, 3t... second intervals (t = median_session_usage_seconds)
      */
     private boolean shouldTriggerVibration(String currentApp, long appDurationMillis) {
+        // Check if user is eligible for querying (must be day >= 2)
+        if (!ModelStorageService.areVibrationsAllowed(this)) {
+            Log.d("SessionTrackerService", "User not eligible for queries yet (current_day < 2) - no Q-table decisions or queries allowed");
+            return false;
+        }
+        
         // Check if vibration budget is exhausted (5 vibrations per group)
         if (numVibrationsInGroup >= 5) {
             Log.d("SessionTrackerService", "Vibration budget exhausted (" + numVibrationsInGroup + "/5) - no more vibrations or queries for this group");
@@ -711,29 +733,24 @@ public class SessionTrackerService extends Service {
         boolean isTestMode = getTestModePreference();
         
         if (isTestMode) {
-            // Test mode: only check at 5, 10, 15... minute intervals
-            long groupElapsedTime = System.currentTimeMillis() - currentGroupStartTime;
-            int currentInterval = (int) (groupElapsedTime / TEST_MODE_GROUP_VIBRATION_THRESHOLD); // Which 5-min interval we're in (0, 1, 2...)
-            
-            // Only trigger if we've reached a new 5-minute interval and haven't vibrated for this interval yet
-            if (currentInterval > 0 && currentInterval > lastVibrationIntervalTriggered) {
-                // We're at a new 5-minute boundary (5min, 10min, 15min, etc.)
-                lastVibrationIntervalTriggered = currentInterval;
+            // Test mode: After 30 seconds in target app, vibrate with 20% probability
+            // Only check once per app session (when currentQueryId is -1)
+            if (appDurationMillis >= VIBRATION_TRIGGER_DURATION && currentQueryId == -1) {
+                // Decide whether to vibrate with 20% probability
+                boolean shouldVibrate = new Random().nextDouble() < 0.2;
                 
-                // Record query for test mode vibration
-                currentQueryId = saveQueryAndReturnId(currentApp, 1, 0);  // action=1 (vibrate), compliance=0 (default)
+                // Record query regardless of vibration decision
+                // action: 1 if vibrate, 0 if not vibrate
+                int action = shouldVibrate ? 1 : 0;
+                currentQueryId = saveQueryAndReturnId(currentApp, action, 0);  // compliance=0 (will update if user leaves)
                 
-                Log.d("SessionTrackerService", "Test mode - Reached " + (currentInterval * 5) + " minute mark, triggering vibration");
-                return true;
-            } else {
-                // Either haven't reached 5 minutes yet, or already vibrated for this interval
-                if (currentInterval == 0) {
-                    Log.d("SessionTrackerService", "Test mode - Group time (" + (groupElapsedTime / 1000) + "s) under 5 minutes, no vibration yet");
-                } else {
-                    Log.d("SessionTrackerService", "Test mode - Already vibrated for " + (currentInterval * 5) + " minute interval");
-                }
-                return false;
+                String decisionStr = shouldVibrate ? "VIBRATE (20% chance hit)" : "NO VIBRATE (80% chance)";
+                Log.d("SessionTrackerService", "Test mode - 30s elapsed in app " + currentApp + 
+                      ", decision: " + decisionStr + " [state: " + currentStateArray + "]");
+                
+                return shouldVibrate;
             }
+            return false;
         } else {
             // Production mode: use Q-learning model at threshold intervals
             return shouldTriggerVibrationUsingModel(currentApp);
@@ -826,6 +843,11 @@ public class SessionTrackerService extends Service {
      * Only queries when a monitored app is in the foreground
      */
     private void checkAndExecuteQueryInterval(String currentApp) {
+        // Check if user is eligible for querying (must be day >= 2)
+        if (!ModelStorageService.areVibrationsAllowed(this)) {
+            return;
+        }
+        
         // Only query during monitored apps (exclude launchers and NULL)
         if (!isAppInMonitorList(currentApp) || isLauncherOrNull(currentApp)) {
             return;
@@ -945,7 +967,13 @@ public class SessionTrackerService extends Service {
             
             // Trigger vibration if decision is to vibrate
             if (shouldVibrate && !isVibrating) {
-                startVibration(currentApp);
+                // Check if vibrations are allowed (current_day >= 2)
+                if (ModelStorageService.areVibrationsAllowed(this)) {
+                    startVibration(currentApp);
+                } else {
+                    int currentDay = ModelStorageService.getCurrentDay(this);
+                    Log.d("SessionTrackerService", "Vibrations not allowed yet - current day: " + currentDay + " (need >= 2)");
+                }
             }
         }
     }
@@ -967,7 +995,7 @@ public class SessionTrackerService extends Service {
     
     /**
      * Refresh cached model data (Q-table and baseline stats)
-     * Call this when model is updated via download
+     * Call this when model is updated via upload response or download
      */
     public void refreshCachedModelData() {
         Log.d("SessionTrackerService", "🔄 Refreshing cached model data...");
@@ -1132,8 +1160,8 @@ public class SessionTrackerService extends Service {
     }
 
     /**
-     * Start continuous vibration for 30 seconds
-     * In test mode: vibrates whenever monitored app comes to foreground after 5-min group threshold
+     * Start continuous vibration for 15 seconds
+     * Test mode: Vibrates whenever a decision is made to vibrate after 30s in target app
      * Uses a repeating pattern since Android limits single vibration to ~5 seconds
      */
     private void startVibration(String appName) {
@@ -1168,6 +1196,16 @@ public class SessionTrackerService extends Service {
             vibrator.vibrate(pattern, -1);
         }
         
+        // Save query and store its ID for compliance update
+        // Only save new query if not in test mode (test mode already saved query during decision)
+        boolean isTestMode = getTestModePreference();
+        if (!isTestMode && currentQueryId == -1) {
+            currentQueryId = saveQueryAndReturnId(appName, 1, 0); // action=1 (vibrate), compliance=0 (not left yet)
+        } else if (isTestMode && currentQueryId != -1) {
+            // In test mode, query was already saved during decision phase, just log
+            Log.d("SessionTrackerService", "Test mode - Using existing query ID " + currentQueryId + " for vibration");
+        }
+        
         // Stop vibration after 15 seconds (when pattern naturally completes)
         handler.postDelayed(() -> {
             stopVibrationAfterDuration(appName);
@@ -1176,16 +1214,14 @@ public class SessionTrackerService extends Service {
 
     /**
      * Stop vibration after 15 seconds
-     * In test mode: doesn't reschedule - vibration will trigger again when monitored app comes to foreground
-     * In production mode: reschedules next vibration cycle after 45 seconds of silence
+     * Test mode: After vibration ends, does not reschedule
+     *            Next vibration will happen when user switches to a different target app and waits 30s
+     * Production mode: Reschedules next query cycle after 45 seconds of silence
      */
     private void stopVibrationAfterDuration(String appName) {
-        // Check if user left the app during vibration
         if (isVibrating && !appName.equals(lastForegroundApp)) {
             userLeftDuringVibration = true;
             Log.d("SessionTrackerService", "User left app during vibration");
-            
-            // Update compliance in the query since user left during vibration
             updateQueryCompliance(currentQueryId, 1);
         } else {
             userLeftDuringVibration = false;
@@ -1208,8 +1244,14 @@ public class SessionTrackerService extends Service {
                 if (!appName.equals(lastForegroundApp)) {
                     Log.d("SessionTrackerService", "App changed, not rescheduling vibration");
                 } else if (isAppInMonitorList(appName)) {
-                    Log.d("SessionTrackerService", "Rescheduling next vibration cycle for " + appName + " (after 45s silence)");
-                    startVibration(appName);
+                    // Check if vibrations are allowed (current_day >= 2)
+                    if (ModelStorageService.areVibrationsAllowed(SessionTrackerService.this)) {
+                        Log.d("SessionTrackerService", "Rescheduling next vibration cycle for " + appName + " (after 45s silence)");
+                        startVibration(appName);
+                    } else {
+                        int currentDay = ModelStorageService.getCurrentDay(SessionTrackerService.this);
+                        Log.d("SessionTrackerService", "Vibration reschedule blocked - current day: " + currentDay + " (need >= 2)");
+                    }
                 }
             }, 3 * VIBRATION_DURATION); // Wait 45 seconds of silence before next vibration (3 * 15s)
         }
