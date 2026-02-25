@@ -29,6 +29,7 @@ public class QueryListAdapter extends ArrayAdapter<Query> {
         TextView stateTextView = convertView.findViewById(R.id.stateTextView);
         TextView actionTextView = convertView.findViewById(R.id.actionTextView);
         TextView complianceTextView = convertView.findViewById(R.id.complianceTextView);
+        TextView decisionTypeTextView = convertView.findViewById(R.id.decisionTypeTextView);
 
         groupIdTextView.setText("Group: " + query.groupId);
         timestampTextView.setText("Time: " + query.timestamp);
@@ -40,6 +41,9 @@ public class QueryListAdapter extends ArrayAdapter<Query> {
         
         String complianceText = query.compliance == 1 ? "User Complied" : "User Did Not Comply";
         complianceTextView.setText(complianceText);
+        
+        String decisionType = query.isExploit == 1 ? "Q-Table Exploit" : "Random/Explore";
+        decisionTypeTextView.setText("Decision: " + decisionType);
 
         return convertView;
     }

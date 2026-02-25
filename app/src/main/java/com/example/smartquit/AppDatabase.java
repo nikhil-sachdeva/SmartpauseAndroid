@@ -6,7 +6,7 @@ import androidx.room.Database;
 import androidx.room.Room;
 import androidx.room.RoomDatabase;
 
-@Database(entities = {AppSession.class, Query.class}, version = 2)
+@Database(entities = {AppSession.class, Query.class}, version = 3)
 public abstract class AppDatabase extends RoomDatabase {
     public abstract AppSessionDao appSessionDao();
     public abstract QueryDao queryDao();

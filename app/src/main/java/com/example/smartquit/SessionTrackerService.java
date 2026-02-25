@@ -48,6 +48,8 @@ public class SessionTrackerService extends Service {
     private static final String KEY_APPS_TO_MONITOR = "apps_to_monitor";
     private static final String KEY_TEST_MODE = "test_mode";
     private static final String KEY_CURRENT_GROUP_ID = "current_group_id";
+    private static final String KEY_DAILY_TARGET_APP_USAGE = "daily_target_app_usage_seconds";
+    private static final String KEY_DAILY_USAGE_DATE = "daily_usage_date";
     private java.util.List<String> appsToMonitor = new ArrayList<>();
     private boolean isVibrating = false;
     private Vibrator vibrator;
@@ -89,6 +91,9 @@ public class SessionTrackerService extends Service {
     private long cumulativeTargetAppUsageSeconds = 0;  // Total time spent in target apps after first query
     private long targetAppSessionStartTime = 0;  // When current target app session started
     private boolean firstQueryTriggered = false;  // Whether first query at median time has occurred
+    
+    // Daily total target app usage tracking (for notification display)
+    private long totalDailyTargetAppUsageSeconds = 0;  // Total target app usage today
     private long lastCountdownLogTime = 0;  // Last time we logged countdown (to avoid log flooding)
     private long lastTestModeCountdownLogTime = 0;  // Last time we logged test-mode countdown
     
@@ -109,6 +114,7 @@ public class SessionTrackerService extends Service {
         loadAppsToMonitor();
         loadGroupId();  // Load group ID from preferences
         loadLastSessionEndTime();  // Load last session end time for proper grouping
+        loadDailyTargetAppUsage();  // Load today's target app usage (or reset for new day)
         
         // Initialize state representation
         updateCurrentState("NULL");
@@ -273,10 +279,21 @@ public class SessionTrackerService extends Service {
                 if (targetAppSessionStartTime > 0) {
                     long targetAppDuration = (currentTime - targetAppSessionStartTime) / 1000;
                     cumulativeTargetAppUsageSeconds += targetAppDuration;
+                    totalDailyTargetAppUsageSeconds += targetAppDuration;  // Track daily total
+                    saveDailyTargetAppUsage();  // Persist to SharedPreferences
+                    updateNotification();  // Update notification with new usage
                     Log.d("SessionTrackerService", "Target app session ended: " + lastForegroundApp + 
-                          " (duration: " + targetAppDuration + "s, cumulative: " + cumulativeTargetAppUsageSeconds + "s)");
+                          " (duration: " + targetAppDuration + "s, cumulative: " + cumulativeTargetAppUsageSeconds + "s, daily: " + totalDailyTargetAppUsageSeconds + "s)");
                     targetAppSessionStartTime = 0;
                 }
+            } else if (isAppInMonitorList(lastForegroundApp)) {
+                // Also track daily usage even before first query (test mode too)
+                long targetAppDuration = (currentTime - lastAppChangeTime) / 1000;
+                totalDailyTargetAppUsageSeconds += targetAppDuration;
+                saveDailyTargetAppUsage();
+                updateNotification();
+                Log.d("SessionTrackerService", "Target app usage tracked: " + lastForegroundApp + 
+                      " (duration: " + targetAppDuration + "s, daily total: " + totalDailyTargetAppUsageSeconds + "s)");
             }
 
             // Save the previous app session to database with vibration info (async)
@@ -339,11 +356,11 @@ public class SessionTrackerService extends Service {
      * Update current state representation variables based on current context
      */
     private void updateCurrentState(String currentApp) {
-        // 1. Number of queries - track queries executed in current group
-        currentStateNumQueries = lastThresholdInterval;
+        // 1. Number of queries - track queries executed in current group (capped at 10 for state space)
+        currentStateNumQueries = Math.min(lastThresholdInterval, 10);
         
-        // 2. Number of vibrations - track vibrations in current group
-        currentStateNumVibrations = numVibrationsInGroup;
+        // 2. Number of vibrations - track vibrations in current group (capped at 5 for state space)
+        currentStateNumVibrations = Math.min(numVibrationsInGroup, 5);
         
         // 3. First app in group is target (0 or 1) - check if first app in group is a target app
         currentStateFirstAppTarget = isAppInMonitorList(currentGroupFirstApp) ? 1 : 0;
@@ -742,7 +759,7 @@ public class SessionTrackerService extends Service {
                 // Record query regardless of vibration decision
                 // action: 1 if vibrate, 0 if not vibrate
                 int action = shouldVibrate ? 1 : 0;
-                currentQueryId = saveQueryAndReturnId(currentApp, action, 0);  // compliance=0 (will update if user leaves)
+                currentQueryId = saveQueryAndReturnId(currentApp, action, 0, 0);  // compliance=0, isExploit=0 (test mode is always random)
                 
                 String decisionStr = shouldVibrate ? "VIBRATE (20% chance hit)" : "NO VIBRATE (80% chance)";
                 Log.d("SessionTrackerService", "Test mode - 30s elapsed in app " + currentApp + 
@@ -752,8 +769,9 @@ public class SessionTrackerService extends Service {
             }
             return false;
         } else {
-            // Production mode: use Q-learning model at threshold intervals
-            return shouldTriggerVibrationUsingModel(currentApp);
+            // Production mode: queries and vibrations handled by checkAndExecuteQueryInterval()
+            // This method should NOT trigger anything in production mode to avoid duplicate queries
+            return false;
         }
     }
     
@@ -815,10 +833,8 @@ public class SessionTrackerService extends Service {
             // Use current state to query Q-table
             boolean shouldVibrate = queryQTableForVibrationDecision();
             
-            // Record query (action: 1 if vibrate, 0 if no vibrate, compliance: 0 for now - will update later if user complies)
-            int action = shouldVibrate ? 1 : 0;
-            int compliance = 0;  // Default to no compliance, will update if user actually leaves app
-            currentQueryId = saveQueryAndReturnId(currentApp, action, compliance);
+            // NOTE: Query is NOT saved here anymore - checkAndExecuteQueryInterval() handles all query saving in production mode
+            // This method ONLY returns the vibration decision
             
             Log.d("SessionTrackerService", "Production mode - Q-model decision at " + 
                   intervalTime + "s (interval #" + currentThresholdInterval + "): " + 
@@ -850,6 +866,11 @@ public class SessionTrackerService extends Service {
         
         // Only query during monitored apps (exclude launchers and NULL)
         if (!isAppInMonitorList(currentApp) || isLauncherOrNull(currentApp)) {
+            return;
+        }
+        
+        // Check if query budget is exhausted (cap at 10 queries per group)
+        if (lastThresholdInterval >= 10) {
             return;
         }
         
@@ -899,8 +920,8 @@ public class SessionTrackerService extends Service {
         
         // Execute query (for first query and all subsequent queries)
         if (firstQueryTriggered) {
-            // For subsequent queries (not first), check if we've accumulated 60s of target app usage
-            if (lastThresholdInterval > 0) {
+            // For subsequent queries (after first), check if we've accumulated 60s of target app usage
+            if (lastThresholdInterval > 1) {
                 // Add current target app session time if applicable
                 long currentCumulativeUsage = cumulativeTargetAppUsageSeconds;
                 if (isAppInMonitorList(currentApp) && !isLauncherOrNull(currentApp) && targetAppSessionStartTime > 0) {
@@ -939,7 +960,8 @@ public class SessionTrackerService extends Service {
             // Record query
             int action = shouldVibrate ? 1 : 0;
             int compliance = 0;
-            currentQueryId = saveQueryAndReturnId(currentApp, action, compliance);
+            int isExploit = lastDecisionType.equals("exploit") ? 1 : 0;  // 1 if exploit, 0 if explore/random/fallback
+            currentQueryId = saveQueryAndReturnId(currentApp, action, compliance, isExploit);
             
             // Calculate cumulative usage for logging
             long loggingCumulativeUsage = cumulativeTargetAppUsageSeconds;
@@ -955,15 +977,18 @@ public class SessionTrackerService extends Service {
                   " (state: " + currentStateArray + ")" +
                   " [ε=" + lastDecisionEpsilon + ", type=" + lastDecisionType + "]");
             
-            // Reset cumulative usage counter after query (except for first query)
-            if (lastThresholdInterval > 0) {
-                cumulativeTargetAppUsageSeconds = 0;
-                targetAppSessionStartTime = System.currentTimeMillis();  // Restart tracking from now
-                lastCountdownLogTime = 0;  // Reset countdown log timer for next cycle
-                Log.d("SessionTrackerService", "Reset cumulative usage counter after query");
-            }
+            // Reset cumulative usage counter after every query to start counting for next query
+            cumulativeTargetAppUsageSeconds = 0;
+            targetAppSessionStartTime = System.currentTimeMillis();  // Restart tracking from now
+            lastCountdownLogTime = 0;  // Reset countdown log timer for next cycle
+            Log.d("SessionTrackerService", "Reset cumulative usage counter after query");
             
             lastThresholdInterval++;  // Increment to track that we've done a query
+            
+            // Check if query limit is reached (max 10 per group)
+            if (lastThresholdInterval >= 10) {
+                Log.d("SessionTrackerService", "Query limit reached (10/10) - no more queries will be executed for this group");
+            }
             
             // Trigger vibration if decision is to vibrate
             if (shouldVibrate && !isVibrating) {
@@ -1071,20 +1096,38 @@ public class SessionTrackerService extends Service {
      */
     private boolean queryQTableForVibrationDecision() {
         try {
-            // Create state key in the format: "num_queries_num_vibrations_first_app_target_quarter_of_day"
-            String stateKey = currentStateNumQueries + "_" + 
-                            currentStateNumVibrations + "_" + 
-                            currentStateFirstAppTarget + "_" + 
-                            currentStateQuarterOfDay;
+            // Create state key in the format: "[num_queries,num_vibrations,first_app_target,quarter_of_day]"
+            // Must match the bracket-comma format used in currentStateArray
+            String stateKey = "[" + currentStateNumQueries + "," + 
+                            currentStateNumVibrations + "," + 
+                            currentStateFirstAppTarget + "," + 
+                            currentStateQuarterOfDay + "]";
             
             Log.d("SessionTrackerService", "Querying Q-table with state: " + stateKey + 
                   " (" + getCurrentStateDescription() + ")");
             
-            if (cachedQTable.has(stateKey)) {
-                org.json.JSONObject stateActions = cachedQTable.getJSONObject(stateKey);
+            // Try exact match first, then try with spaces (in case Q-table was saved with JSON formatting)
+            boolean stateExists = cachedQTable.has(stateKey);
+            if (!stateExists) {
+                // Try with spaces: "[0, 0, 0, 1]" format
+                String stateKeyWithSpaces = "[" + currentStateNumQueries + ", " + 
+                                           currentStateNumVibrations + ", " + 
+                                           currentStateFirstAppTarget + ", " + 
+                                           currentStateQuarterOfDay + "]";
+                stateExists = cachedQTable.has(stateKeyWithSpaces);
+                if (stateExists) {
+                    stateKey = stateKeyWithSpaces;  // Use the spaced version
+                    Log.d("SessionTrackerService", "Found state with spaces format: " + stateKey);
+                }
+            }
+            
+            if (stateExists) {
+                // Get Q-values for this state
+                // Q-table stores states as: {"[2, 0, 1, 1]": [Q_no_vibrate, Q_vibrate], ...}
+                org.json.JSONArray stateQValues = cachedQTable.getJSONArray(stateKey);
                 
-                double noVibrateQ = stateActions.optDouble("0", 0.0);  // No vibrate action
-                double vibrateQ = stateActions.optDouble("1", 0.0);    // Vibrate action
+                double noVibrateQ = stateQValues.optDouble(0, 0.0);  // Action 0: no vibrate
+                double vibrateQ = stateQValues.optDouble(1, 0.0);    // Action 1: vibrate
                 
                 boolean shouldVibrate;
                 String decisionReason;
@@ -1093,25 +1136,36 @@ public class SessionTrackerService extends Service {
                 Random random = new Random();
                 double randomValue = random.nextDouble();
                 
+                Log.d("SessionTrackerService", "🎲 Epsilon-greedy decision: randomValue=" + String.format("%.3f", randomValue) + 
+                      ", epsilon=" + String.format("%.3f", cachedEpsilon) + 
+                      (randomValue < cachedEpsilon ? " -> EXPLORING (randomness)" : " -> EXPLOITING (Q-table)"));
+                
                 if (randomValue < cachedEpsilon) {
-                    // Explore: choose random action
+                    // Explore: choose random action based on randomness, ignore Q-values
                     shouldVibrate = random.nextBoolean();
-                    decisionReason = "explore (ε=" + cachedEpsilon + ", rand=" + String.format("%.3f", randomValue) + ")";
+                    decisionReason = "EXPLORE (random action, ignoring Q-table; ε=" + cachedEpsilon + ", rand=" + String.format("%.3f", randomValue) + ")";
                     lastDecisionType = "explore";
                     lastDecisionEpsilon = cachedEpsilon;
+                    Log.d("SessionTrackerService", "   -> Exploration selected: action chosen randomly (" + (shouldVibrate ? "VIBRATE" : "NO VIBRATE") + ")");
                 } else {
-                    // Exploit: choose action with higher Q-value
+                    // Exploit: choose action with higher Q-value from the learned model
                     if (noVibrateQ == 0.0 && vibrateQ == 0.0) {
-                        // Both Q-values are 0, choose randomly
+                        // Both Q-values are 0, no learning yet - choose randomly as fallback
                         shouldVibrate = random.nextBoolean();
-                        decisionReason = "random (both Q=0, exploiting)";
+                        decisionReason = "EXPLOIT (both Q=0, random fallback; ε=" + cachedEpsilon + ", rand=" + String.format("%.3f", randomValue) + ")";
                         lastDecisionType = "exploit-random";
                         lastDecisionEpsilon = cachedEpsilon;
+                        Log.d("SessionTrackerService", "   -> Exploitation selected: both Q-values are 0, using random fallback (" + (shouldVibrate ? "VIBRATE" : "NO VIBRATE") + ")");
                     } else {
+                        // Use Q-table: choose action with higher Q-value
                         shouldVibrate = vibrateQ > noVibrateQ;
-                        decisionReason = "exploit (ε=" + cachedEpsilon + ", confidence: " + String.format("%.3f", Math.abs(vibrateQ - noVibrateQ)) + ")";
+                        double qDifference = Math.abs(vibrateQ - noVibrateQ);
+                        decisionReason = "EXPLOIT (using Q-table; ε=" + cachedEpsilon + ", Q-diff=" + String.format("%.3f", qDifference) + ")";
                         lastDecisionType = "exploit";
                         lastDecisionEpsilon = cachedEpsilon;
+                        Log.d("SessionTrackerService", "   -> Exploitation selected: using Q-table to pick best action. Q[no-vibrate]=" + 
+                              String.format("%.3f", noVibrateQ) + ", Q[vibrate]=" + String.format("%.3f", vibrateQ) + 
+                              " (" + (shouldVibrate ? "VIBRATE" : "NO VIBRATE") + " is better)");
                     }
                 }
                 
@@ -1130,15 +1184,15 @@ public class SessionTrackerService extends Service {
                 lastDecisionType = "fallback";
                 lastDecisionEpsilon = cachedEpsilon;
                 
-                // Log first few available states for debugging
+                // Log sample available states for debugging - show how they're actually formatted
                 org.json.JSONArray keys = cachedQTable.names();
                 if (keys != null && keys.length() > 0) {
                     StringBuilder availableStates = new StringBuilder();
                     int maxStates = Math.min(5, keys.length());
                     for (int i = 0; i < maxStates; i++) {
-                        availableStates.append(keys.optString(i)).append(" ");
+                        availableStates.append("\"").append(keys.optString(i)).append("\" ");
                     }
-                    Log.d("SessionTrackerService", "Sample available states: " + availableStates.toString());
+                    Log.d("SessionTrackerService", "Sample available state keys (actual format): " + availableStates.toString());
                 }
                 
                 return false;  // Default to no vibration if state not found
@@ -1200,7 +1254,8 @@ public class SessionTrackerService extends Service {
         // Only save new query if not in test mode (test mode already saved query during decision)
         boolean isTestMode = getTestModePreference();
         if (!isTestMode && currentQueryId == -1) {
-            currentQueryId = saveQueryAndReturnId(appName, 1, 0); // action=1 (vibrate), compliance=0 (not left yet)
+            int isExploit = lastDecisionType.equals("exploit") ? 1 : 0;
+            currentQueryId = saveQueryAndReturnId(appName, 1, 0, isExploit); // action=1 (vibrate), compliance=0 (not left yet)
         } else if (isTestMode && currentQueryId != -1) {
             // In test mode, query was already saved during decision phase, just log
             Log.d("SessionTrackerService", "Test mode - Using existing query ID " + currentQueryId + " for vibration");
@@ -1214,9 +1269,8 @@ public class SessionTrackerService extends Service {
 
     /**
      * Stop vibration after 15 seconds
-     * Test mode: After vibration ends, does not reschedule
-     *            Next vibration will happen when user switches to a different target app and waits 30s
-     * Production mode: Reschedules next query cycle after 45 seconds of silence
+     * Vibrations only occur when a query decides to vibrate - no automatic rescheduling
+     * Next vibration will only happen when the next query decides to vibrate
      */
     private void stopVibrationAfterDuration(String appName) {
         if (isVibrating && !appName.equals(lastForegroundApp)) {
@@ -1229,32 +1283,9 @@ public class SessionTrackerService extends Service {
         
         stopVibration();
         
-        // Only reschedule in production mode
-        boolean isTestMode = getTestModePreference();
-        if (!isTestMode) {
-            // Production mode: schedule next vibration cycle after 45 seconds of silence
-            handler.postDelayed(() -> {
-                // Check if vibration budget is exhausted before rescheduling
-                if (numVibrationsInGroup >= 5) {
-                    Log.d("SessionTrackerService", "Vibration budget exhausted (" + numVibrationsInGroup + "/5) - not rescheduling vibration");
-                    return;
-                }
-                
-                // Only reschedule if still in same app and app is monitored
-                if (!appName.equals(lastForegroundApp)) {
-                    Log.d("SessionTrackerService", "App changed, not rescheduling vibration");
-                } else if (isAppInMonitorList(appName)) {
-                    // Check if vibrations are allowed (current_day >= 2)
-                    if (ModelStorageService.areVibrationsAllowed(SessionTrackerService.this)) {
-                        Log.d("SessionTrackerService", "Rescheduling next vibration cycle for " + appName + " (after 45s silence)");
-                        startVibration(appName);
-                    } else {
-                        int currentDay = ModelStorageService.getCurrentDay(SessionTrackerService.this);
-                        Log.d("SessionTrackerService", "Vibration reschedule blocked - current day: " + currentDay + " (need >= 2)");
-                    }
-                }
-            }, 3 * VIBRATION_DURATION); // Wait 45 seconds of silence before next vibration (3 * 15s)
-        }
+        // No automatic rescheduling - vibrations ONLY happen when a query decides to vibrate
+        // This ensures numVibrationsInGroup can never exceed number of queries
+        Log.d("SessionTrackerService", "Vibration ended. Next vibration will only occur if next query decides to vibrate.");
     }
 
     /**
@@ -1325,9 +1356,12 @@ public class SessionTrackerService extends Service {
     }
 
     private Notification createNotification() {
+        String usageText = formatDuration(totalDailyTargetAppUsageSeconds);
+        String contentTitle = "Target App Usage: " + usageText;
+        
         NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("SmartQuit Active")
-                .setContentText("Monitoring app usage...")
+                .setContentTitle(contentTitle)
+                .setContentText("SmartQuit is monitoring your app usage")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 .setOngoing(true)  // Prevent swipe-to-dismiss
@@ -1339,6 +1373,75 @@ public class SessionTrackerService extends Service {
         }
         
         return builder.build();
+    }
+
+    /**
+     * Update the notification with current daily target app usage
+     */
+    private void updateNotification() {
+        NotificationManager notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (notificationManager != null) {
+            notificationManager.notify(NOTIFICATION_ID, createNotification());
+        }
+    }
+
+    /**
+     * Format duration in seconds to human-readable format (e.g., "1h 23m", "45m", "30s")
+     */
+    private String formatDuration(long totalSeconds) {
+        if (totalSeconds < 60) {
+            return totalSeconds + "s";
+        } else if (totalSeconds < 3600) {
+            long minutes = totalSeconds / 60;
+            long seconds = totalSeconds % 60;
+            if (seconds > 0) {
+                return minutes + "m " + seconds + "s";
+            }
+            return minutes + "m";
+        } else {
+            long hours = totalSeconds / 3600;
+            long minutes = (totalSeconds % 3600) / 60;
+            if (minutes > 0) {
+                return hours + "h " + minutes + "m";
+            }
+            return hours + "h";
+        }
+    }
+
+    /**
+     * Load daily target app usage from SharedPreferences
+     * Resets to 0 if date has changed (new day)
+     */
+    private void loadDailyTargetAppUsage() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        String today = getISODate(System.currentTimeMillis());
+        String savedDate = prefs.getString(KEY_DAILY_USAGE_DATE, "");
+        
+        if (today.equals(savedDate)) {
+            // Same day, load saved usage
+            totalDailyTargetAppUsageSeconds = prefs.getLong(KEY_DAILY_TARGET_APP_USAGE, 0);
+            Log.d("SessionTrackerService", "Loaded daily usage: " + totalDailyTargetAppUsageSeconds + "s for " + today);
+        } else {
+            // New day, reset usage
+            totalDailyTargetAppUsageSeconds = 0;
+            prefs.edit()
+                .putLong(KEY_DAILY_TARGET_APP_USAGE, 0)
+                .putString(KEY_DAILY_USAGE_DATE, today)
+                .apply();
+            Log.d("SessionTrackerService", "New day detected (" + today + "), reset daily usage to 0");
+        }
+    }
+
+    /**
+     * Save daily target app usage to SharedPreferences
+     */
+    private void saveDailyTargetAppUsage() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        String today = getISODate(System.currentTimeMillis());
+        prefs.edit()
+            .putLong(KEY_DAILY_TARGET_APP_USAGE, totalDailyTargetAppUsageSeconds)
+            .putString(KEY_DAILY_USAGE_DATE, today)
+            .apply();
     }
 
     @Override
@@ -1470,7 +1573,7 @@ public class SessionTrackerService extends Service {
      * Save query to database (vibration decision point)
      * Records the state, action, and compliance at the moment of decision
      */
-    private void saveQuery(String currentApp, int action, int compliance) {
+    private void saveQuery(String currentApp, int action, int compliance, int isExploit) {
         new Thread(() -> {
             try {
                 String timestamp = getCurrentTimestamp();
@@ -1484,7 +1587,8 @@ public class SessionTrackerService extends Service {
                     currentApp,
                     currentStateArray,  // State as JSON array string
                     action,
-                    compliance
+                    compliance,
+                    isExploit
                 );
                 
                 db.queryDao().insert(query);
@@ -1493,6 +1597,7 @@ public class SessionTrackerService extends Service {
                       ", state=" + currentStateArray + 
                       ", action=" + action + 
                       ", compliance=" + compliance + 
+                      ", isExploit=" + isExploit +
                       ", group_id=" + currentGroupId);
                       
             } catch (Exception e) {
@@ -1518,7 +1623,7 @@ public class SessionTrackerService extends Service {
      * Records the state, action, and compliance at the moment of decision
      * Returns the query ID so compliance can be updated later
      */
-    private int saveQueryAndReturnId(String currentApp, int action, int compliance) {
+    private int saveQueryAndReturnId(String currentApp, int action, int compliance, int isExploit) {
         final int[] queryId = {-1};
         Thread thread = new Thread(() -> {
             try {
@@ -1533,7 +1638,8 @@ public class SessionTrackerService extends Service {
                     currentApp,
                     currentStateArray,  // State as JSON array string
                     action,
-                    compliance
+                    compliance,
+                    isExploit
                 );
                 
                 long id = db.queryDao().insertAndReturnId(query);
@@ -1543,6 +1649,7 @@ public class SessionTrackerService extends Service {
                       ", state=" + currentStateArray + 
                       ", action=" + action + 
                       ", compliance=" + compliance + 
+                      ", isExploit=" + isExploit +
                       ", group_id=" + currentGroupId);
                       
             } catch (Exception e) {

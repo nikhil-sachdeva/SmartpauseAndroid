@@ -90,6 +90,7 @@ public interface RetrofitApiService {
         public java.util.List<Integer> state;  // State array as list of integers
         public int action;
         public int compliance;
+        public int is_exploit;  // 0 = random/explore, 1 = Q-table exploit
     }
 
     /**

@@ -16,9 +16,10 @@ public class Query {
     public String state;  // JSON array string like "[0,1,2,1]"
     public int action;  // 0 or 1 (no vibrate or vibrate)
     public int compliance;  // 0 or 1 (did not comply or complied)
+    public int isExploit;  // 0 = random/explore, 1 = Q-table exploit
 
     public Query(String userId, int groupId, String date, String timestamp, String currentApp, 
-                 String state, int action, int compliance) {
+                 String state, int action, int compliance, int isExploit) {
         this.userId = userId;
         this.groupId = groupId;
         this.date = date;
@@ -27,6 +28,7 @@ public class Query {
         this.state = state;
         this.action = action;
         this.compliance = compliance;
+        this.isExploit = isExploit;
     }
 
     @Override
@@ -41,6 +43,7 @@ public class Query {
                 ", state='" + state + '\'' +
                 ", action=" + action +
                 ", compliance=" + compliance +
+                ", isExploit=" + isExploit +
                 '}';
     }
 }

@@ -1,7 +1,10 @@
 package com.example.smartquit;
 
+import android.app.job.JobInfo;
 import android.app.job.JobParameters;
+import android.app.job.JobScheduler;
 import android.app.job.JobService;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Build;
@@ -21,6 +24,11 @@ import retrofit2.converter.gson.GsonConverterFactory;
 
 /**
  * Job service to handle daily session uploads at 3 AM
+ * 
+ * Robust upload mechanism:
+ * - Tracks last successful upload date to ensure exactly-once upload per day
+ * - Retries every 1 minute on failure until successful
+ * - On success: marks date as uploaded, clears DB, schedules next day's 3 AM
  */
 public class SessionUploadJobService extends JobService {
 
@@ -28,16 +36,43 @@ public class SessionUploadJobService extends JobService {
     private static final String API_BASE_URL = "https://smartquit-cyber.onrender.com";
     private static final String PREFS_NAME = "SmartQuitPrefs";
     private static final String KEY_USER_ID = "user_id";
-    private static final int MAX_RETRIES = 3;
-    private static final long RETRY_DELAY_MS = 30000; // 30 seconds between retries
-
-    private int retryCount = 0;
+    private static final String KEY_LAST_SUCCESSFUL_UPLOAD_DATE = "last_successful_upload_date";
+    private static final String KEY_UPLOAD_IN_PROGRESS = "upload_in_progress";
+    private static final int RETRY_JOB_ID = 101; // Different from main 3 AM job ID (100)
+    private static final long RETRY_DELAY_MS = 60000; // 1 minute between retries
 
     @Override
     public boolean onStartJob(JobParameters params) {
         java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
         String currentTime = sdf.format(new java.util.Date(System.currentTimeMillis()));
         Log.d(TAG, "========== UPLOAD JOB TRIGGERED AT: " + currentTime + " ==========");
+        
+        String todayDate = getTodayDate();
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        String lastSuccessfulUploadDate = prefs.getString(KEY_LAST_SUCCESSFUL_UPLOAD_DATE, "");
+        
+        // Check if already uploaded today (idempotency check)
+        if (todayDate.equals(lastSuccessfulUploadDate)) {
+            Log.d(TAG, "✅ Already successfully uploaded today (" + todayDate + "). Skipping duplicate upload.");
+            Log.d(TAG, "========== UPLOAD JOB SKIPPED (ALREADY DONE) ==========\n");
+            
+            // Schedule next upload for tomorrow 3 AM
+            scheduleNextUpload();
+            jobFinished(params, false);
+            return false;
+        }
+        
+        // Check if upload is already in progress (prevents concurrent uploads)
+        boolean uploadInProgress = prefs.getBoolean(KEY_UPLOAD_IN_PROGRESS, false);
+        if (uploadInProgress) {
+            Log.d(TAG, "⚠️ Upload already in progress. Skipping to prevent duplicate API calls.");
+            Log.d(TAG, "========== UPLOAD JOB SKIPPED (IN PROGRESS) ==========\n");
+            jobFinished(params, false);
+            return false;
+        }
+        
+        // Mark upload as in progress
+        prefs.edit().putBoolean(KEY_UPLOAD_IN_PROGRESS, true).apply();
         
         // Run upload in background thread
         new Thread(() -> {
@@ -70,7 +105,6 @@ public class SessionUploadJobService extends JobService {
 
             Log.d(TAG, "========== UPLOAD JOB STARTED ==========");
             Log.d(TAG, "User ID: " + userId);
-            Log.d(TAG, "Retry count: " + retryCount + "/" + MAX_RETRIES);
             Log.d(TAG, "Current time: " + System.currentTimeMillis());
 
             // Get ALL sessions from local database
@@ -146,6 +180,7 @@ public class SessionUploadJobService extends JobService {
                     
                     queryData.action = query.action;
                     queryData.compliance = query.compliance;
+                    queryData.is_exploit = query.isExploit;
                     apiQueries.add(queryData);
                     
                     Log.d(TAG, "  Query: " + query.currentApp);
@@ -154,6 +189,7 @@ public class SessionUploadJobService extends JobService {
                     Log.d(TAG, "    State: " + query.state);
                     Log.d(TAG, "    Action: " + query.action);
                     Log.d(TAG, "    Compliance: " + query.compliance);
+                    Log.d(TAG, "    Is Exploit: " + query.isExploit);
                 }
             }
 
@@ -181,14 +217,29 @@ public class SessionUploadJobService extends JobService {
             call.enqueue(new Callback<RetrofitApiService.UploadResponse>() {
                 @Override
                 public void onResponse(Call<RetrofitApiService.UploadResponse> call, Response<RetrofitApiService.UploadResponse> response) {
+                    SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+                    
                     if (response.isSuccessful()) {
                         RetrofitApiService.UploadResponse uploadResponse = response.body();
                         Log.d(TAG, "✅ Upload successful!");
                         Log.d(TAG, "Response: " + uploadResponse.message);
-                                                // Save current day from upload response
+                        
+                        // MARK UPLOAD AS SUCCESSFUL FOR TODAY - ensures exactly-once upload
+                        String uploadDate = getTodayDate();
+                        prefs.edit()
+                            .putString(KEY_LAST_SUCCESSFUL_UPLOAD_DATE, uploadDate)
+                            .putBoolean(KEY_UPLOAD_IN_PROGRESS, false)
+                            .apply();
+                        Log.d(TAG, "✅ Marked " + uploadDate + " as successfully uploaded.");
+                        
+                        // Cancel any pending retry jobs since we succeeded
+                        cancelRetryJob();
+                        
+                        // Save current day from upload response
                         ModelStorageService.saveCurrentDay(SessionUploadJobService.this, uploadResponse.current_day);
                         Log.d(TAG, "Current day: " + uploadResponse.current_day);
-                                                // Save updated Q-table and metadata from upload response
+                        
+                        // Save updated Q-table and metadata from upload response
                         if (uploadResponse.updated_model != null) {
                             Log.d(TAG, "✅ Processing updated model from upload response...");
                             ModelStorageService.saveQTableFromUpload(SessionUploadJobService.this, uploadResponse.updated_model);
@@ -225,7 +276,6 @@ public class SessionUploadJobService extends JobService {
                             }
                         }).start();
                         
-                        retryCount = 0; // Reset retry count on success
                         jobFinished(params, false);
                     } else {
                         Log.e(TAG, "❌ Upload failed with HTTP code: " + response.code());
@@ -236,43 +286,80 @@ public class SessionUploadJobService extends JobService {
                             Log.e(TAG, "Could not read error body", e);
                         }
                         
-                        handleUploadFailure(params);
+                        handleUploadFailure(params, prefs);
                     }
                 }
 
                 @Override
                 public void onFailure(Call<RetrofitApiService.UploadResponse> call, Throwable t) {
                     Log.e(TAG, "❌ Upload failed with network error: " + t.getMessage(), t);
-                    handleUploadFailure(params);
+                    SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+                    handleUploadFailure(params, prefs);
                 }
 
                 /**
-                 * Handle upload failure with retry logic
+                 * Handle upload failure - schedule 1-minute retry until successful
                  */
-                private void handleUploadFailure(JobParameters params) {
-                    if (retryCount < MAX_RETRIES) {
-                        retryCount++;
-                        Log.d(TAG, "⏳ Retrying upload (" + retryCount + "/" + MAX_RETRIES + ") after " + RETRY_DELAY_MS + "ms");
-                        
-                        // Retry after delay
-                        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
-                            uploadSessions(params);
-                        }, RETRY_DELAY_MS);
-                    } else {
-                        Log.e(TAG, "❌ Upload failed after " + MAX_RETRIES + " retries");
-                        Log.e(TAG, "Will retry upload at next scheduled time...");
-                        Log.d(TAG, "========== UPLOAD JOB FAILED (WILL RETRY) ==========\n");
-                        retryCount = 0;
-                        jobFinished(params, true); // Reschedule
-                    }
+                private void handleUploadFailure(JobParameters params, SharedPreferences prefs) {
+                    // Clear in-progress flag so retry can proceed
+                    prefs.edit().putBoolean(KEY_UPLOAD_IN_PROGRESS, false).apply();
+                    
+                    Log.d(TAG, "⏳ Will retry upload in 1 minute...");
+                    Log.d(TAG, "========== UPLOAD JOB FAILED (RETRY SCHEDULED) ==========\n");
+                    
+                    // Schedule retry job for 1 minute later
+                    scheduleRetryJob();
+                    
+                    jobFinished(params, false); // Don't use system reschedule, we handle it ourselves
                 }
             });
 
         } catch (Exception e) {
             Log.e(TAG, "❌ Error in uploadSessions", e);
             Log.d(TAG, "========== UPLOAD JOB FAILED (EXCEPTION) ==========\n");
-            jobFinished(params, true); // Reschedule
+            
+            // Clear in-progress flag and schedule retry
+            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            prefs.edit().putBoolean(KEY_UPLOAD_IN_PROGRESS, false).apply();
+            
+            scheduleRetryJob();
+            jobFinished(params, false); // Don't use system reschedule
         }
+    }
+
+    /**
+     * Schedule a retry job to run in 1 minute
+     * This ensures uploads keep retrying until successful
+     */
+    private void scheduleRetryJob() {
+        JobScheduler jobScheduler = (JobScheduler) getSystemService(Context.JOB_SCHEDULER_SERVICE);
+        
+        JobInfo.Builder builder = new JobInfo.Builder(RETRY_JOB_ID, new ComponentName(this, SessionUploadJobService.class))
+                .setMinimumLatency(RETRY_DELAY_MS)  // Wait 1 minute before retry
+                .setOverrideDeadline(RETRY_DELAY_MS * 2)  // Must run within 2 minutes
+                .setPersisted(true);  // Survive reboots
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setRequiresDeviceIdle(false);
+        }
+        
+        JobInfo jobInfo = builder.build();
+        int result = jobScheduler.schedule(jobInfo);
+        
+        if (result == JobScheduler.RESULT_SUCCESS) {
+            Log.d(TAG, "✅ Retry job scheduled for 1 minute from now");
+        } else {
+            Log.e(TAG, "❌ Failed to schedule retry job");
+        }
+    }
+
+    /**
+     * Cancel any pending retry jobs (called after successful upload)
+     */
+    private void cancelRetryJob() {
+        JobScheduler jobScheduler = (JobScheduler) getSystemService(Context.JOB_SCHEDULER_SERVICE);
+        jobScheduler.cancel(RETRY_JOB_ID);
+        Log.d(TAG, "✅ Cancelled pending retry jobs (upload succeeded)");
     }
 
     /**
