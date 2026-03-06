@@ -14,8 +14,11 @@ import android.widget.ArrayAdapter;
 import android.widget.AdapterView;
 import android.view.View;
 import android.content.SharedPreferences;
+import android.graphics.Color;
 
 import androidx.appcompat.app.AppCompatActivity;
+
+import com.google.android.material.card.MaterialCardView;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -23,9 +26,7 @@ import org.json.JSONException;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import okhttp3.Call;
@@ -256,26 +257,11 @@ public class ModelDataActivity extends AppCompatActivity {
         
         // Calculate total usage time
         long totalSeconds = 0;
-        Set<String> uniqueApps = new HashSet<>();
         
         if (sessions != null) {
             for (int i = 0; i < sessions.length(); i++) {
                 JSONObject session = sessions.getJSONObject(i);
                 totalSeconds += session.optLong("duration_seconds", 0);
-                uniqueApps.add(session.optString("app_name", "Unknown"));
-            }
-        }
-        
-        String lastActivity = "N/A";
-        if (sessions != null && sessions.length() > 0) {
-            try {
-                JSONObject lastSession = sessions.getJSONObject(sessions.length() - 1);
-                lastActivity = lastSession.optString("end_time", "N/A");
-                if (!lastActivity.equals("N/A")) {
-                    lastActivity = lastActivity.split("T")[0]; // Get just the date part
-                }
-            } catch (Exception e) {
-                lastActivity = "N/A";
             }
         }
         
@@ -299,11 +285,9 @@ public class ModelDataActivity extends AppCompatActivity {
         if (baselineStats != null) {
             int medianTargetUsageSeconds = baselineStats.optInt("median_target_app_usage_seconds", 0);
             int medianSessionUsageSeconds = baselineStats.optInt("median_session_usage_seconds", 0);
-            int queryInterval = baselineStats.optInt("query_interval_seconds", 0);
             
             addStatCard("Median Target Usage", medianTargetUsageSeconds + " seconds (" + (medianTargetUsageSeconds / 60) + " min)");
             addStatCard("Median Session Usage", medianSessionUsageSeconds + " seconds (" + (medianSessionUsageSeconds / 60) + " min)");
-            addStatCard("Query Interval", queryInterval + " seconds");
             
             // Display epsilon from baseline_stats if available (this is what's actually used operationally)
             if (baselineStats.has("epsilon")) {
@@ -316,8 +300,6 @@ public class ModelDataActivity extends AppCompatActivity {
         // Display calculated session stats for additional context
         addStatCard("Total Sessions", String.valueOf(totalSessions));
         addStatCard("Total Usage Time", (totalSeconds / 60) + " min");
-        addStatCard("Unique Apps", String.valueOf(uniqueApps.size()));
-        addStatCard("Last Activity", lastActivity);
         
         // Display model update timestamp
         String updatedAt = data.optString("updated_at", "N/A");
@@ -332,32 +314,42 @@ public class ModelDataActivity extends AppCompatActivity {
     }
 
     private void addStatCard(String title, String value) {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(24, 24, 24, 24);
-        card.setBackgroundColor(getResources().getColor(android.R.color.background_light));
+        // Create MaterialCardView with border
+        MaterialCardView card = new MaterialCardView(this);
+        card.setRadius(dpToPx(12));
+        card.setCardElevation(dpToPx(2));
+        card.setStrokeColor(Color.parseColor("#E0E0E0"));
+        card.setStrokeWidth(dpToPx(1));
+        card.setCardBackgroundColor(Color.WHITE);
         
         // Create card with fixed width for consistent layout
         LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
-        cardParams.setMargins(8, 8, 8, 8);
+        cardParams.setMargins(dpToPx(4), dpToPx(4), dpToPx(4), dpToPx(4));
         card.setLayoutParams(cardParams);
+        
+        // Content container
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dpToPx(16), dpToPx(16), dpToPx(16), dpToPx(16));
+        content.setGravity(android.view.Gravity.CENTER);
         
         TextView titleView = new TextView(this);
         titleView.setText(title);
-        titleView.setTextSize(12);
-        titleView.setTextColor(getResources().getColor(android.R.color.darker_gray));
+        titleView.setTextSize(11);
+        titleView.setTextColor(Color.parseColor("#757575"));
         titleView.setGravity(android.view.Gravity.CENTER);
         
         TextView valueView = new TextView(this);
         valueView.setText(value);
-        valueView.setTextSize(16);
-        valueView.setTextColor(getResources().getColor(android.R.color.holo_blue_dark));
+        valueView.setTextSize(14);
+        valueView.setTextColor(Color.parseColor("#6200EE"));
         valueView.setTypeface(null, android.graphics.Typeface.BOLD);
         valueView.setGravity(android.view.Gravity.CENTER);
         
-        card.addView(titleView);
-        card.addView(valueView);
+        content.addView(titleView);
+        content.addView(valueView);
+        card.addView(content);
         
         // Create new row every 3 cards or if this is the first card
         int childCount = statsContainer.getChildCount();
@@ -370,7 +362,7 @@ public class ModelDataActivity extends AppCompatActivity {
             currentRow.setOrientation(LinearLayout.HORIZONTAL);
             currentRow.setLayoutParams(new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-            currentRow.setPadding(0, 8, 0, 8);
+            currentRow.setPadding(0, dpToPx(4), 0, dpToPx(4));
             statsContainer.addView(currentRow);
         } else {
             // Use existing row
@@ -378,6 +370,11 @@ public class ModelDataActivity extends AppCompatActivity {
         }
         
         currentRow.addView(card);
+    }
+    
+    private int dpToPx(int dp) {
+        float density = getResources().getDisplayMetrics().density;
+        return Math.round(dp * density);
     }
 
     private void displaySessionsData(JSONArray sessions) {

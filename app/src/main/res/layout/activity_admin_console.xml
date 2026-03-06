@@ -57,26 +57,17 @@
             android:text="Model Data"
             android:layout_marginEnd="8dp" />
 
-        <LinearLayout
+        <TextView
+            android:id="@+id/modeDisplayText"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Test Mode"
-                android:textSize="14sp"
-                android:layout_marginEnd="8dp" />
-
-            <androidx.appcompat.widget.SwitchCompat
-                android:id="@+id/testModeToggle"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:checked="true" />
-
-        </LinearLayout>
+            android:text="Mode: TEST"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:textColor="@android:color/holo_blue_dark"
+            android:background="@android:color/white"
+            android:padding="8dp"
+            android:layout_marginStart="8dp" />
 
     </LinearLayout>
 

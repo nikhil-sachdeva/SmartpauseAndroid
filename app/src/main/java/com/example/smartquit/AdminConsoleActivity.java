@@ -13,7 +13,6 @@ import android.content.SharedPreferences;
 import android.content.Context;
 
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.appcompat.widget.SwitchCompat;
 
 import com.google.android.material.tabs.TabLayout;
 
@@ -33,9 +32,9 @@ public class AdminConsoleActivity extends AppCompatActivity {
     private QueryListAdapter queryAdapter;
     private Handler handler;
     private Runnable timerRunnable;
-    private SwitchCompat testModeToggle;
+    private TextView modeDisplayText;
     private static final String PREFS_NAME = "SmartQuitPrefs";
-    private static final String KEY_TEST_MODE = "test_mode";
+    private static final String KEY_TEST_MODE = "is_test_mode";  // Use same key as RegistrationActivity
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -96,17 +95,12 @@ public class AdminConsoleActivity extends AppCompatActivity {
             });
         }
 
-        // Set up Test Mode toggle
-        testModeToggle = findViewById(R.id.testModeToggle);
-        if (testModeToggle != null) {
+        // Set up Mode display (read-only)
+        modeDisplayText = findViewById(R.id.modeDisplayText);
+        if (modeDisplayText != null) {
             boolean isTestMode = getTestModePreference();
-            testModeToggle.setChecked(isTestMode);
-            testModeToggle.setOnCheckedChangeListener((buttonView, isChecked) -> {
-                saveTestModePreference(isChecked);
-                Toast.makeText(AdminConsoleActivity.this,
-                        isChecked ? "Test Mode Enabled" : "Production Mode Enabled",
-                        Toast.LENGTH_SHORT).show();
-            });
+            String modeText = isTestMode ? "Mode: TEST" : "Mode: PRODUCTION";
+            modeDisplayText.setText(modeText);
         }
 
         loadMonitoredApps();
@@ -233,21 +227,11 @@ public class AdminConsoleActivity extends AppCompatActivity {
     }
 
     /**
-     * Save test mode preference to SharedPreferences
-     */
-    private void saveTestModePreference(boolean isTestMode) {
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        SharedPreferences.Editor editor = prefs.edit();
-        editor.putBoolean(KEY_TEST_MODE, isTestMode);
-        editor.apply();
-    }
-
-    /**
-     * Get test mode preference (default: true)
+     * Get test mode preference - now read-only, set during registration (default: false = production)
      */
     private boolean getTestModePreference() {
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        return prefs.getBoolean(KEY_TEST_MODE, true);
+        return prefs.getBoolean(KEY_TEST_MODE, false);  // Default to production mode
     }
 
     @Override

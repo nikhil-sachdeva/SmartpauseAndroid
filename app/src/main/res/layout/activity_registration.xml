@@ -9,6 +9,7 @@
         android:id="@+id/instructionText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
         android:layout_marginBottom="16dp"
         android:text="Welcome! Select the apps you want to monitor:"
         android:textSize="18sp"

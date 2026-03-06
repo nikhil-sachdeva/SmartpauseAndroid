@@ -46,7 +46,7 @@ public class SessionTrackerService extends Service {
     private static final long GROUP_BREAK_THRESHOLD = 45 * 1000; // 45 seconds
     private static final String PREFS_NAME = "SmartQuitPrefs";
     private static final String KEY_APPS_TO_MONITOR = "apps_to_monitor";
-    private static final String KEY_TEST_MODE = "test_mode";
+    private static final String KEY_TEST_MODE = "is_test_mode";  // Use same key as RegistrationActivity
     private static final String KEY_CURRENT_GROUP_ID = "current_group_id";
     private static final String KEY_DAILY_TARGET_APP_USAGE = "daily_target_app_usage_seconds";
     private static final String KEY_DAILY_USAGE_DATE = "daily_usage_date";
@@ -111,6 +111,10 @@ public class SessionTrackerService extends Service {
         db = AppDatabase.getDatabase(this);
         handler = new Handler();
         vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+        
+        // Load user ID from SharedPreferences (critical for session tracking)
+        loadUserId();
+        
         loadAppsToMonitor();
         loadGroupId();  // Load group ID from preferences
         loadLastSessionEndTime();  // Load last session end time for proper grouping
@@ -203,6 +207,12 @@ public class SessionTrackerService extends Service {
 
     private void startTracking() {
         final int delay = 1000; // 1 second
+        
+        // Log initial tracking state
+        Log.d("SessionTrackerService", "=== TRACKING STARTED ===");
+        Log.d("SessionTrackerService", "Apps to monitor: " + appsToMonitor.toString());
+        Log.d("SessionTrackerService", "User ID: " + userId);
+        Log.d("SessionTrackerService", "Screen unlocked: " + isScreenUnlocked);
 
         trackingRunnable = new Runnable() {
             @Override
@@ -222,6 +232,8 @@ public class SessionTrackerService extends Service {
                         if (!getTestModePreference()) {
                             checkAndExecuteQueryInterval(currentApp);
                         }
+                    } else {
+                        Log.w("SessionTrackerService", "getForegroundTask returned null or empty");
                     }
                 } catch (Exception e) {
                     Log.e("SessionTrackerService", "Error in tracking loop", e);
@@ -426,17 +438,35 @@ public class SessionTrackerService extends Service {
         String currentApp = "NULL";
         try {
             android.app.usage.UsageStatsManager usm = (android.app.usage.UsageStatsManager) getSystemService(Context.USAGE_STATS_SERVICE);
+            if (usm == null) {
+                Log.e("SessionTrackerService", "UsageStatsManager is NULL - permission may not be granted");
+                return "NULL";
+            }
+            
             long time = System.currentTimeMillis();
             
-            // Try multiple time windows to catch recent app switches
-            // First try very recent (last 10 seconds)
-            java.util.List<android.app.usage.UsageStats> appList = usm.queryUsageStats(
-                    android.app.usage.UsageStatsManager.INTERVAL_DAILY, time - 10000, time);
+            // Use queryUsageStats as the primary method - more reliable across devices
+            java.util.List<android.app.usage.UsageStats> appList = null;
+            try {
+                appList = usm.queryUsageStats(
+                        android.app.usage.UsageStatsManager.INTERVAL_DAILY, time - 10000, time);
+            } catch (SecurityException e) {
+                Log.w("SessionTrackerService", "SecurityException accessing usage stats: " + e.getMessage());
+                return "NULL";
+            } catch (Exception e) {
+                Log.w("SessionTrackerService", "Exception querying usage stats: " + e.getMessage());
+                return "NULL";
+            }
             
             if (appList == null || appList.isEmpty()) {
                 // Fallback to wider window if no recent data (last minute)
-                appList = usm.queryUsageStats(
-                        android.app.usage.UsageStatsManager.INTERVAL_DAILY, time - 60000, time);
+                try {
+                    appList = usm.queryUsageStats(
+                            android.app.usage.UsageStatsManager.INTERVAL_DAILY, time - 60000, time);
+                } catch (Exception e) {
+                    Log.w("SessionTrackerService", "Exception in fallback usage stats query: " + e.getMessage());
+                    return "NULL";
+                }
             }
             
             if (appList != null && appList.size() > 0) {
@@ -445,33 +475,52 @@ public class SessionTrackerService extends Service {
                 long mostRecentTime = 0;
                 
                 for (android.app.usage.UsageStats usageStats : appList) {
-                    String packageName = usageStats.getPackageName();
-                    if (usageStats.getLastTimeUsed() > mostRecentTime) {
-                        // Don't filter out launchers here - we need them to detect home button
-                        if (!packageName.equals("com.example.smartquit")) {
-                            mostRecentTime = usageStats.getLastTimeUsed();
-                            mostRecent = usageStats;
+                    try {
+                        String packageName = usageStats.getPackageName();
+                        // Add null check and basic validation for package name
+                        if (packageName == null || packageName.isEmpty()) {
+                            Log.d("SessionTrackerService", "Skipping null/empty package name");
+                            continue;
                         }
+                        
+                        long lastUsed = usageStats.getLastTimeUsed();
+                        if (lastUsed > mostRecentTime) {
+                            // Don't filter out launchers here - we need them to detect home button
+                            if (!packageName.equals("com.example.smartquit")) {
+                                mostRecentTime = lastUsed;
+                                mostRecent = usageStats;
+                            }
+                        }
+                    } catch (Exception e) {
+                        // Log parsing errors but continue processing other packages
+                        Log.d("SessionTrackerService", "Error parsing usage stats entry: " + e.getMessage());
+                        continue;
                     }
                 }
                 
                 if (mostRecent != null) {
-                    String packageName = mostRecent.getPackageName();
-                    long ageMillis = time - mostRecentTime;
-                    
-                    if (packageName.startsWith("com.android.systemui") || 
-                        packageName.startsWith("android") ||
-                        packageName.startsWith("com.google.android.gms")) {
-                        // Skip system UI but keep looking
-                        Log.d("SessionTrackerService", "Skipping system package: " + packageName);
-                    } else {
-                        currentApp = packageName;
-                        // Only log non-launcher apps
-                        if (!isLauncherOrNull(currentApp)) {
-                            // Log.d("SessionTrackerService", "UsageStats found: " + currentApp + " (age: " + ageMillis + "ms)");
+                    try {
+                        String packageName = mostRecent.getPackageName();
+                        long ageMillis = time - mostRecentTime;
+                        
+                        if (packageName.startsWith("com.android.systemui") || 
+                            packageName.startsWith("android") ||
+                            packageName.startsWith("com.google.android.gms")) {
+                            // Skip system UI but keep looking
+                            Log.d("SessionTrackerService", "Skipping system package: " + packageName);
+                        } else {
+                            currentApp = packageName;
+                            // Only log non-launcher apps to reduce noise
+                            if (!isLauncherOrNull(currentApp)) {
+                                Log.d("SessionTrackerService", "UsageStats found: " + currentApp + " (age: " + ageMillis + "ms)");
+                            }
                         }
+                    } catch (Exception e) {
+                        Log.w("SessionTrackerService", "Error processing most recent usage stats: " + e.getMessage());
                     }
                 }
+            } else {
+                Log.w("SessionTrackerService", "queryUsageStats returned empty - checking permissions");
             }
         } catch (Exception e) {
             Log.e("SessionTrackerService", "Error in UsageStats detection", e);
@@ -617,6 +666,24 @@ public class SessionTrackerService extends Service {
                 firebaseCrashlytics.recordException(e);
             }
         }).start();
+    }
+
+    /**
+     * Load user ID from SharedPreferences
+     */
+    private void loadUserId() {
+        try {
+            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            String storedUserId = prefs.getString("user_id", null);
+            if (storedUserId != null && !storedUserId.isEmpty()) {
+                userId = storedUserId;
+                Log.d("SessionTrackerService", "Loaded user ID from prefs: " + userId);
+            } else {
+                Log.w("SessionTrackerService", "No user ID found in SharedPreferences, using default: " + userId);
+            }
+        } catch (Exception e) {
+            Log.e("SessionTrackerService", "Error loading user ID", e);
+        }
     }
 
     /**
@@ -1210,7 +1277,7 @@ public class SessionTrackerService extends Service {
      */
     private boolean getTestModePreference() {
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        return prefs.getBoolean(KEY_TEST_MODE, true);
+        return prefs.getBoolean(KEY_TEST_MODE, false);  // Default to production mode
     }
 
     /**

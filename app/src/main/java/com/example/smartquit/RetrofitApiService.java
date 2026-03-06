@@ -25,6 +25,9 @@ public interface RetrofitApiService {
         @retrofit2.http.Query("offset") int offset
     );
     
+    @retrofit2.http.GET("/api/v1/home/weekly-usage/{user_id}")
+    Call<WeeklyUsageResponse> getWeeklyUsage(@retrofit2.http.Path("user_id") String userId);
+    
     /**
      * Request body for user registration
      */
@@ -32,11 +35,13 @@ public interface RetrofitApiService {
         public String user_id;
         public DeviceInfo device_info;
         public java.util.List<String> apps_to_monitor;
+        public boolean is_test_mode;  // Random allocation for A/B testing
         
-        public RegistrationRequest(String userId, DeviceInfo deviceInfo, java.util.List<String> appsToMonitor) {
+        public RegistrationRequest(String userId, DeviceInfo deviceInfo, java.util.List<String> appsToMonitor, boolean isTestMode) {
             this.user_id = userId;
             this.device_info = deviceInfo;
             this.apps_to_monitor = appsToMonitor;
+            this.is_test_mode = isTestMode;
         }
     }
     
@@ -65,6 +70,7 @@ public interface RetrofitApiService {
         public String user_id;
         public java.util.List<String> apps_to_monitor;
         public String message;
+        public boolean is_test_mode;  // Test/production mode allocation
     }
 
     /**
@@ -199,5 +205,46 @@ public interface RetrofitApiService {
         public String error_message;
         public String created_at;
         public String updated_at;
+    }
+
+    /**
+     * Weekly usage response from home endpoint
+     */
+    class WeeklyUsageResponse {
+        public String user_id;
+        public int period_days;
+        public DateRange date_range;
+        public java.util.List<String> apps_to_monitor;
+        public java.util.List<DailyUsage> daily_usage;
+        public java.util.Map<String, AppUsage> per_app_usage;
+        public float total_usage_seconds;
+        public String total_usage_formatted;
+        public String message;
+    }
+
+    /**
+     * Date range for weekly usage
+     */
+    class DateRange {
+        public String start;
+        public String end;
+    }
+
+    /**
+     * Daily usage breakdown
+     */
+    class DailyUsage {
+        public String date;
+        public java.util.Map<String, Float> apps;
+        public float total_seconds;
+        public String total_formatted;
+    }
+
+    /**
+     * Per-app usage statistics
+     */
+    class AppUsage {
+        public float total_seconds;
+        public String total_formatted;
     }
 }

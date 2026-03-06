@@ -30,6 +30,7 @@ import com.google.gson.GsonBuilder;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.Random;
 
 import retrofit2.Call;
 import retrofit2.Callback;
@@ -141,6 +142,7 @@ public class RegistrationActivity extends AppCompatActivity {
                     appCheckboxContainer.addView(checkBox);
                 }
                 
+                
                 instructionText.setText("Loaded " + appInfoList.size() + " apps. Select the apps you want to monitor:");
             });
         }).start();
@@ -215,13 +217,19 @@ public class RegistrationActivity extends AppCompatActivity {
         java.util.List<String> appsToSend = selectedApps.isEmpty() ? null : new ArrayList<>(selectedApps);
         Log.d("REGISTRATION", "Apps to send (null if empty): " + appsToSend);
         
+        // Random allocation between test and production mode (50/50 split)
+        boolean isTestMode = Math.random() < 0.5;
+        Log.d("REGISTRATION", "Randomly allocated to: " + (isTestMode ? "TEST" : "PRODUCTION") + " mode");
+        
         RetrofitApiService.RegistrationRequest request = new RetrofitApiService.RegistrationRequest(
                 userId,
                 deviceInfo,
-                appsToSend
+                appsToSend,
+                isTestMode
         );
 
         Log.d("REGISTRATION", "Request created. Apps field: " + request.apps_to_monitor);
+        Log.d("REGISTRATION", "Request created. Test mode: " + request.is_test_mode);
 
         // Create Retrofit instance
         Gson gson = new GsonBuilder().setPrettyPrinting().create();
@@ -242,6 +250,7 @@ public class RegistrationActivity extends AppCompatActivity {
                 if (response.isSuccessful() && response.body() != null) {
                     Log.d("REGISTRATION", "Registration successful!");
                     Log.d("REGISTRATION", "Response apps_to_monitor: " + response.body().apps_to_monitor);
+                    Log.d("REGISTRATION", "Response test mode: " + response.body().is_test_mode);
                     
                     // Save registration status to SharedPreferences
                     SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
@@ -249,16 +258,22 @@ public class RegistrationActivity extends AppCompatActivity {
                     editor.putString(KEY_USER_ID, userId);
                     editor.putBoolean(KEY_REGISTERED, true);
                     
+                    // Save test mode allocation
+                    editor.putBoolean("is_test_mode", response.body().is_test_mode);
+                    
                     // Save apps to monitor as JSON array
                     org.json.JSONArray appsJsonArray = new org.json.JSONArray(selectedApps);
                     editor.putString(KEY_APPS_TO_MONITOR, appsJsonArray.toString());
                     editor.apply();
 
+                    // Show success message with mode allocation
+                    String mode = response.body().is_test_mode ? "TEST" : "PRODUCTION";
                     Toast.makeText(RegistrationActivity.this, 
-                            "Registration successful!", Toast.LENGTH_SHORT).show();
+                            "Registration successful! Mode: " + mode, Toast.LENGTH_LONG).show();
                     
                     Log.d("REGISTRATION", "User registered: " + userId);
                     Log.d("REGISTRATION", "Apps to monitor: " + response.body().apps_to_monitor);
+                    Log.d("REGISTRATION", "Test mode: " + response.body().is_test_mode);
                     Log.d("REGISTRATION", "========== END REGISTRATION DEBUG ==========\n");
 
                     // Launch MainActivity

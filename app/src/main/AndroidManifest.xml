@@ -1,6 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
+    
+    <!-- Package visibility queries for Android 11+ -->
+    <queries>
+        <!-- Query all apps with launcher intent for app monitoring -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <!-- Query for common package patterns to avoid parsing errors -->
+        <package android:name="com.android.launcher" />
+        <package android:name="com.google.android.googlequicksearchbox" />
+    </queries>
+    
     <uses-permission android:name="android.permission.GET_TASKS" />
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions" />
