@@ -12,6 +12,7 @@ import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.os.Vibrator;
 import android.util.Log;
 import java.util.Calendar;
@@ -65,6 +66,10 @@ public class SessionTrackerService extends Service {
     private boolean userLeftDuringVibration = false;  // Flag if user left app during vibration
     private int currentQueryId = -1;  // Track the current query ID for compliance updates
     
+    // WakeLock to keep CPU running when screen is off (critical for MIUI/Xiaomi phones)
+    private PowerManager.WakeLock wakeLock;
+    private static final String WAKELOCK_TAG = "SmartPause:SessionTracking";
+    
     // Screen lock tracking
     private boolean isScreenUnlocked = true;  // Assume screen is unlocked initially
     private ScreenLockReceiver screenLockReceiver;
@@ -96,6 +101,8 @@ public class SessionTrackerService extends Service {
     private long totalDailyTargetAppUsageSeconds = 0;  // Total target app usage today
     private long lastCountdownLogTime = 0;  // Last time we logged countdown (to avoid log flooding)
     private long lastTestModeCountdownLogTime = 0;  // Last time we logged test-mode countdown
+    private long lastNotificationHealthCheckTime = 0;  // Last time we verified notification is showing
+    private static final long NOTIFICATION_HEALTH_CHECK_INTERVAL = 60 * 1000;  // Check every 60 seconds
     
     private FirebaseAnalytics firebaseAnalytics;  // Firebase Analytics instance
     private FirebaseCrashlytics firebaseCrashlytics;  // Firebase Crashlytics instance
@@ -111,6 +118,10 @@ public class SessionTrackerService extends Service {
         db = AppDatabase.getDatabase(this);
         handler = new Handler();
         vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+        
+        // Acquire partial WakeLock to keep CPU running when screen is off
+        // This is critical for MIUI/Xiaomi phones that aggressively kill background services
+        acquireWakeLock();
         
         // Load user ID from SharedPreferences (critical for session tracking)
         loadUserId();
@@ -191,12 +202,42 @@ public class SessionTrackerService extends Service {
         bundle.putBoolean("has_baseline_stats", cachedBaselineStats != null);
         bundle.putBoolean("has_qtable", cachedQTable != null);
         firebaseAnalytics.logEvent("service_created_successfully", bundle);
+        
+        // Cancel any pending restart alarms since service is now running
+        BootReceiver.cancelServiceRestartAlarm(this);
+        
+        // Schedule periodic health check via WorkManager (idempotent)
+        ServiceHealthCheckWorker.schedulePeriodicHealthCheck(this);
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         Log.d("SessionTrackerService", "onStartCommand called");
+        
+        // Mark that service should be running
+        BootReceiver.setServiceShouldRun(this, true);
+        
+        // Cancel any pending restart alarms since service is now running
+        BootReceiver.cancelServiceRestartAlarm(this);
+        
+        // Ensure foreground service is running with notification
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                // Android 14+ requires foreground service type
+                startForeground(NOTIFICATION_ID, createNotification(), 
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+            } else {
+                startForeground(NOTIFICATION_ID, createNotification());
+            }
+        } catch (Exception e) {
+            Log.e("SessionTrackerService", "Error in onStartCommand foreground: " + e.getMessage());
+            firebaseCrashlytics.recordException(e);
+        }
+        
         startTracking();
+        
+        // Return START_STICKY to have Android restart service if killed
+        // Also START_REDELIVER_INTENT could be used but STICKY is more appropriate here
         return START_STICKY;
     }
 
@@ -234,6 +275,13 @@ public class SessionTrackerService extends Service {
                         }
                     } else {
                         Log.w("SessionTrackerService", "getForegroundTask returned null or empty");
+                    }
+                    
+                    // Periodically verify notification is still showing (every 60 seconds)
+                    long currentTime = System.currentTimeMillis();
+                    if (currentTime - lastNotificationHealthCheckTime >= NOTIFICATION_HEALTH_CHECK_INTERVAL) {
+                        lastNotificationHealthCheckTime = currentTime;
+                        verifyNotificationShowing();
                     }
                 } catch (Exception e) {
                     Log.e("SessionTrackerService", "Error in tracking loop", e);
@@ -347,18 +395,17 @@ public class SessionTrackerService extends Service {
                 long now = System.currentTimeMillis();
                 if (now - lastTestModeCountdownLogTime >= 5000) {
                     long remainingSeconds = (VIBRATION_TRIGGER_DURATION - appDurationMillis) / 1000;
-                    Log.d("SessionTrackerService", "Test mode - Query countdown: " + remainingSeconds +
+                    Log.d("SessionTrackerService", "⏱️ Test mode - Query countdown: " + remainingSeconds +
                             "s remaining for app " + currentApp);
                     lastTestModeCountdownLogTime = now;
                 }
             }
             if (isAppInMonitorList(currentApp) && !isVibrating && shouldTriggerVibration(currentApp, appDurationMillis)) {
-                // Check if vibrations are allowed (current_day >= 2)
+                // Check if vibrations are allowed (requires baseline stats)
                 if (ModelStorageService.areVibrationsAllowed(this)) {
                     startVibration(currentApp);
                 } else {
-                    int currentDay = ModelStorageService.getCurrentDay(this);
-                    Log.d("SessionTrackerService", "Vibrations not allowed yet - current day: " + currentDay + " (need >= 2)");
+                    Log.d("SessionTrackerService", "Vibrations not allowed yet - no baseline stats available");
                 }
             }
         }
@@ -974,7 +1021,7 @@ public class SessionTrackerService extends Service {
             
             // Trigger first query at median threshold
             firstQueryTriggered = true;
-            lastThresholdInterval = 1;  // Mark that first query has been done
+            // Note: lastThresholdInterval incremented after query is saved to keep accurate count
             
             // Start tracking target app usage if currently in a target app
             if (isAppInMonitorList(currentApp) && !isLauncherOrNull(currentApp)) {
@@ -988,7 +1035,7 @@ public class SessionTrackerService extends Service {
         // Execute query (for first query and all subsequent queries)
         if (firstQueryTriggered) {
             // For subsequent queries (after first), check if we've accumulated 60s of target app usage
-            if (lastThresholdInterval > 1) {
+            if (lastThresholdInterval >= 1) {
                 // Add current target app session time if applicable
                 long currentCumulativeUsage = cumulativeTargetAppUsageSeconds;
                 if (isAppInMonitorList(currentApp) && !isLauncherOrNull(currentApp) && targetAppSessionStartTime > 0) {
@@ -1409,32 +1456,76 @@ public class SessionTrackerService extends Service {
 
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationManager notificationManager = getSystemService(NotificationManager.class);
+            if (notificationManager == null) {
+                Log.e("SessionTrackerService", "NotificationManager is null - cannot create channel");
+                return;
+            }
+            
+            // Delete existing channel if it exists (to reset any user changes)
+            NotificationChannel existingChannel = notificationManager.getNotificationChannel(CHANNEL_ID);
+            if (existingChannel != null && existingChannel.getImportance() < NotificationManager.IMPORTANCE_LOW) {
+                // User has disabled the channel - recreate it
+                Log.w("SessionTrackerService", "Notification channel was disabled - recreating");
+                notificationManager.deleteNotificationChannel(CHANNEL_ID);
+            }
+            
             NotificationChannel channel = new NotificationChannel(
                     CHANNEL_ID,
-                    "Session Tracker",
-                    NotificationManager.IMPORTANCE_DEFAULT);
-            channel.setDescription("Session tracking service running in background");
+                    "SmartPause Session Tracking",
+                    NotificationManager.IMPORTANCE_LOW);  // LOW = silent but always visible
+            channel.setDescription("Required for SmartPause to track your app usage. Disabling may stop the service.");
             channel.setShowBadge(false);
+            channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);  // Show on lock screen
+            channel.setBypassDnd(false);  // Don't bypass DND
+            channel.enableVibration(false);  // No vibration for this notification
+            channel.enableLights(false);  // No LED
+            notificationManager.createNotificationChannel(channel);
+            Log.d("SessionTrackerService", "✅ Notification channel created/verified");
+        }
+    }
+    
+    /**
+     * Ensure notification channel exists and is enabled.
+     * Call this before showing notifications to handle cases where user disabled the channel.
+     */
+    private void ensureNotificationChannelExists() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationManager notificationManager = getSystemService(NotificationManager.class);
             if (notificationManager != null) {
-                notificationManager.createNotificationChannel(channel);
+                NotificationChannel channel = notificationManager.getNotificationChannel(CHANNEL_ID);
+                if (channel == null) {
+                    Log.w("SessionTrackerService", "⚠️ Notification channel missing - recreating");
+                    createNotificationChannel();
+                } else if (channel.getImportance() == NotificationManager.IMPORTANCE_NONE) {
+                    Log.w("SessionTrackerService", "⚠️ Notification channel disabled by user");
+                    // Log to Firebase for analytics
+                    android.os.Bundle bundle = new android.os.Bundle();
+                    bundle.putString("issue", "notification_channel_disabled");
+                    firebaseAnalytics.logEvent("notification_issue", bundle);
+                }
             }
         }
     }
 
     private Notification createNotification() {
+        // Ensure channel exists before creating notification
+        ensureNotificationChannelExists();
+        
         String usageText = formatDuration(totalDailyTargetAppUsageSeconds);
-        String contentTitle = "Target App Usage: " + usageText;
         
         NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle(contentTitle)
-                .setContentText("SmartQuit is monitoring your app usage")
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-                .setOngoing(true)  // Prevent swipe-to-dismiss
-                .setCategory(NotificationCompat.CATEGORY_SERVICE);
+                .setContentTitle("Today's monitored apps usage: " + usageText)
+                .setContentText("SmartPause is monitoring your apps")
+                .setSmallIcon(android.R.drawable.ic_menu_recent_history)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setOngoing(true)
+                .setAutoCancel(false)
+                .setOnlyAlertOnce(true)
+                .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC);
         
-        // For Android 12+, specify foreground service type
+        // For Android 12+, ensure notification shows immediately
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             builder.setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE);
         }
@@ -1446,9 +1537,47 @@ public class SessionTrackerService extends Service {
      * Update the notification with current daily target app usage
      */
     private void updateNotification() {
-        NotificationManager notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (notificationManager != null) {
-            notificationManager.notify(NOTIFICATION_ID, createNotification());
+        try {
+            NotificationManager notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (notificationManager != null) {
+                notificationManager.notify(NOTIFICATION_ID, createNotification());
+            } else {
+                Log.e("SessionTrackerService", "❌ NotificationManager is null - cannot update notification");
+            }
+        } catch (Exception e) {
+            Log.e("SessionTrackerService", "❌ Error updating notification", e);
+            firebaseCrashlytics.recordException(e);
+        }
+    }
+    
+    /**
+     * Verify notification is still showing and re-display if needed.
+     * Call this periodically to ensure notification visibility.
+     */
+    private void verifyNotificationShowing() {
+        try {
+            NotificationManager notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (notificationManager != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                android.service.notification.StatusBarNotification[] activeNotifications = notificationManager.getActiveNotifications();
+                boolean found = false;
+                for (android.service.notification.StatusBarNotification sbn : activeNotifications) {
+                    if (sbn.getId() == NOTIFICATION_ID) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    Log.w("SessionTrackerService", "⚠️ Notification not showing - re-displaying");
+                    notificationManager.notify(NOTIFICATION_ID, createNotification());
+                    
+                    // Log to Firebase
+                    android.os.Bundle bundle = new android.os.Bundle();
+                    bundle.putString("issue", "notification_disappeared");
+                    firebaseAnalytics.logEvent("notification_issue", bundle);
+                }
+            }
+        } catch (Exception e) {
+            Log.e("SessionTrackerService", "Error verifying notification", e);
         }
     }
 
@@ -1515,11 +1644,16 @@ public class SessionTrackerService extends Service {
     public void onDestroy() {
         super.onDestroy();
         
+        Log.w("SessionTrackerService", "⚠️ Service being destroyed - scheduling restart");
+        
         // Log service destruction to Firebase
         android.os.Bundle bundle = new android.os.Bundle();
         bundle.putLong("uptime_millis", System.currentTimeMillis() - currentGroupStartTime);
         bundle.putInt("current_group_id", currentGroupId);
+        bundle.putInt("android_sdk_version", Build.VERSION.SDK_INT);
+        bundle.putBoolean("service_should_run", BootReceiver.shouldServiceRun(this));
         firebaseAnalytics.logEvent("service_destroyed", bundle);
+        firebaseCrashlytics.log("Service destroyed, uptime: " + (System.currentTimeMillis() - currentGroupStartTime) + "ms");
         
         stopVibration();
         handler.removeCallbacksAndMessages(null);
@@ -1542,22 +1676,40 @@ public class SessionTrackerService extends Service {
             }
         }
         
+        // Release WakeLock
+        releaseWakeLock();
+        
+        // Schedule service restart if it should still be running
+        // This provides resilience against Android killing the service
+        if (BootReceiver.shouldServiceRun(this)) {
+            Log.d("SessionTrackerService", "Scheduling service restart in 5 seconds...");
+            BootReceiver.scheduleServiceRestart(this, 5000);
+        }
+        
         Log.d("SessionTrackerService", "Service destroyed");
     }
     
     @Override
     public void onTaskRemoved(Intent rootIntent) {
         super.onTaskRemoved(rootIntent);
-        Log.d("SessionTrackerService", "Task removed - restarting service");
+        Log.w("SessionTrackerService", "⚠️ Task removed - scheduling service restart");
         
         // Log task removal to Firebase
         android.os.Bundle bundle = new android.os.Bundle();
         bundle.putLong("uptime_millis", System.currentTimeMillis() - currentGroupStartTime);
         bundle.putInt("current_group_id", currentGroupId);
         bundle.putString("last_app", lastForegroundApp);
+        bundle.putInt("android_sdk_version", Build.VERSION.SDK_INT);
         firebaseAnalytics.logEvent("service_task_removed", bundle);
+        firebaseCrashlytics.log("Service task removed");
         
-        // Restart the service when task is removed
+        // Check if service should still be running
+        if (!BootReceiver.shouldServiceRun(getApplicationContext())) {
+            Log.d("SessionTrackerService", "Service should not run, not restarting");
+            return;
+        }
+        
+        // Attempt immediate restart
         Intent restartServiceIntent = new Intent(getApplicationContext(), this.getClass());
         restartServiceIntent.setPackage(getPackageName());
         
@@ -1567,15 +1719,58 @@ public class SessionTrackerService extends Service {
             } else {
                 getApplicationContext().startService(restartServiceIntent);
             }
+            Log.d("SessionTrackerService", "✅ Service restart requested after task removal");
         } catch (Exception e) {
-            Log.e("SessionTrackerService", "Failed to restart service after task removal", e);
+            Log.e("SessionTrackerService", "❌ Failed to restart service after task removal: " + e.getMessage());
             
             // Log restart failure to Firebase
             android.os.Bundle errorBundle = new android.os.Bundle();
             errorBundle.putString("error_message", e.getMessage());
-            errorBundle.putString("error_type", "service_restart_failure");
+            errorBundle.putString("error_type", "task_removed_restart_failure");
+            errorBundle.putInt("android_sdk_version", Build.VERSION.SDK_INT);
             firebaseAnalytics.logEvent("service_restart_failure", errorBundle);
             firebaseCrashlytics.recordException(e);
+            
+            // Schedule restart via AlarmManager as fallback (idempotent)
+            BootReceiver.scheduleServiceRestart(getApplicationContext(), 5000);
+        }
+    }
+    
+    @Override
+    public void onLowMemory() {
+        super.onLowMemory();
+        Log.w("SessionTrackerService", "⚠️ Low memory warning received");
+        
+        // Log low memory event to Firebase
+        android.os.Bundle bundle = new android.os.Bundle();
+        bundle.putInt("android_sdk_version", Build.VERSION.SDK_INT);
+        bundle.putLong("uptime_millis", System.currentTimeMillis() - currentGroupStartTime);
+        firebaseAnalytics.logEvent("service_low_memory", bundle);
+        firebaseCrashlytics.log("Service received low memory warning");
+        
+        // Preemptively schedule restart in case system kills us
+        if (BootReceiver.shouldServiceRun(this)) {
+            BootReceiver.scheduleServiceRestart(this, 30000); // 30 seconds
+        }
+    }
+    
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        
+        // Log significant memory trim events
+        if (level >= TRIM_MEMORY_MODERATE) {
+            Log.w("SessionTrackerService", "⚠️ Memory trim level: " + level);
+            
+            android.os.Bundle bundle = new android.os.Bundle();
+            bundle.putInt("trim_level", level);
+            bundle.putInt("android_sdk_version", Build.VERSION.SDK_INT);
+            firebaseAnalytics.logEvent("service_memory_trim", bundle);
+            
+            // If we're at critical level, schedule restart just in case
+            if (level >= TRIM_MEMORY_COMPLETE && BootReceiver.shouldServiceRun(this)) {
+                BootReceiver.scheduleServiceRestart(this, 10000);
+            }
         }
     }
 
@@ -1797,6 +1992,50 @@ public class SessionTrackerService extends Service {
             java.util.Calendar calendar = java.util.Calendar.getInstance();
             java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US);
             return sdf.format(calendar.getTime());
+        }
+    }
+    
+    /**
+     * Acquire a partial WakeLock to keep the CPU running when screen is off.
+     * This is critical for MIUI/Xiaomi and other aggressive OEM phones that
+     * kill background services during idle/overnight periods.
+     * 
+     * Uses PARTIAL_WAKE_LOCK which keeps the CPU running but allows screen to be off.
+     */
+    private void acquireWakeLock() {
+        try {
+            if (wakeLock == null) {
+                PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                if (powerManager != null) {
+                    wakeLock = powerManager.newWakeLock(
+                            PowerManager.PARTIAL_WAKE_LOCK,
+                            WAKELOCK_TAG);
+                    wakeLock.setReferenceCounted(false);  // Non-reference counted for safety
+                }
+            }
+            
+            if (wakeLock != null && !wakeLock.isHeld()) {
+                wakeLock.acquire();
+                Log.d("SessionTrackerService", "✅ WakeLock acquired - CPU will stay active when screen is off");
+            }
+        } catch (Exception e) {
+            Log.e("SessionTrackerService", "❌ Failed to acquire WakeLock: " + e.getMessage());
+            firebaseCrashlytics.recordException(e);
+        }
+    }
+    
+    /**
+     * Release the WakeLock. Called when service is destroyed.
+     */
+    private void releaseWakeLock() {
+        try {
+            if (wakeLock != null && wakeLock.isHeld()) {
+                wakeLock.release();
+                Log.d("SessionTrackerService", "✅ WakeLock released");
+            }
+        } catch (Exception e) {
+            Log.e("SessionTrackerService", "❌ Failed to release WakeLock: " + e.getMessage());
+            // Don't crash - just log
         }
     }
 }

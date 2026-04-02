@@ -4,17 +4,24 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:padding="16dp"
     tools:context=".AdminConsoleActivity">
 
-    <TextView
-        android:id="@+id/adminTitleTextView"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Admin Console"
-        android:textSize="24sp"
-        android:textStyle="bold"
-        android:layout_marginBottom="16dp" />
+    <LinearLayout
+        android:id="@+id/mainContentLayout"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/adminTitleTextView"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Admin Console"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="16dp" />
 
     <TextView
         android:id="@+id/monitoredAppsTextView"
@@ -71,6 +78,25 @@
 
     </LinearLayout>
 
+    <Button
+        android:id="@+id/uploadAllNowButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Upload All Sessions &amp; Queries Now"
+        android:textColor="@android:color/white"
+        android:backgroundTint="@android:color/holo_green_dark"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:id="@+id/uploadStatusText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textSize="14sp"
+        android:textColor="@android:color/holo_blue_dark"
+        android:layout_marginBottom="8dp"
+        android:visibility="gone" />
+
     <com.google.android.material.tabs.TabLayout
         android:id="@+id/tabLayout"
         android:layout_width="match_parent"
@@ -100,5 +126,7 @@
             android:visibility="gone" />
 
     </FrameLayout>
+
+    </LinearLayout>
 
 </LinearLayout>

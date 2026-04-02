@@ -15,7 +15,9 @@ import com.google.gson.GsonBuilder;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
+import okhttp3.OkHttpClient;
 import retrofit2.Call;
 import retrofit2.Callback;
 import retrofit2.Response;
@@ -33,7 +35,7 @@ import retrofit2.converter.gson.GsonConverterFactory;
 public class SessionUploadJobService extends JobService {
 
     private static final String TAG = "SessionUploadJobService";
-    private static final String API_BASE_URL = "https://smartquit-cyber.onrender.com";
+    private static final String API_BASE_URL = "https://smartpauseappv2.vercel.app";
     private static final String PREFS_NAME = "SmartQuitPrefs";
     private static final String KEY_USER_ID = "user_id";
     private static final String KEY_LAST_SUCCESSFUL_UPLOAD_DATE = "last_successful_upload_date";
@@ -65,14 +67,29 @@ public class SessionUploadJobService extends JobService {
         // Check if upload is already in progress (prevents concurrent uploads)
         boolean uploadInProgress = prefs.getBoolean(KEY_UPLOAD_IN_PROGRESS, false);
         if (uploadInProgress) {
-            Log.d(TAG, "⚠️ Upload already in progress. Skipping to prevent duplicate API calls.");
-            Log.d(TAG, "========== UPLOAD JOB SKIPPED (IN PROGRESS) ==========\n");
-            jobFinished(params, false);
-            return false;
+            Log.d(TAG, "⚠️ Upload already in progress. Checking if it's a stale lock...");
+            
+            // Check if the in-progress flag is stale (older than 5 minutes)
+            long checkTimeMillis = System.currentTimeMillis();
+            long uploadStartTime = prefs.getLong("upload_start_time", checkTimeMillis);
+            long timeDiff = checkTimeMillis - uploadStartTime;
+            
+            if (timeDiff > 300000) { // 5 minutes
+                Log.w(TAG, "Upload in-progress flag is stale (" + (timeDiff/1000) + "s old). Clearing and proceeding.");
+                prefs.edit().putBoolean(KEY_UPLOAD_IN_PROGRESS, false).apply();
+            } else {
+                Log.d(TAG, "⚠️ Recent upload in progress (" + (timeDiff/1000) + "s ago). Skipping to prevent duplicate API calls.");
+                Log.d(TAG, "========== UPLOAD JOB SKIPPED (IN PROGRESS) ==========\n");
+                jobFinished(params, false);
+                return false;
+            }
         }
         
-        // Mark upload as in progress
-        prefs.edit().putBoolean(KEY_UPLOAD_IN_PROGRESS, true).apply();
+        // Mark upload as in progress with timestamp
+        prefs.edit()
+            .putBoolean(KEY_UPLOAD_IN_PROGRESS, true)
+            .putLong("upload_start_time", System.currentTimeMillis())
+            .apply();
         
         // Run upload in background thread
         new Thread(() -> {
@@ -204,10 +221,17 @@ public class SessionUploadJobService extends JobService {
             Log.d(TAG, "Upload request date format: " + todayDate);
             Log.d(TAG, "Sample session start_time format: " + (apiSessions.size() > 0 ? apiSessions.get(0).start_time : "N/A"));
 
-            // Make API call
+            // Make API call with 60 second timeout (Vercel cold starts can take 10-15s)
+            OkHttpClient okHttpClient = new OkHttpClient.Builder()
+                    .connectTimeout(60, TimeUnit.SECONDS)
+                    .readTimeout(60, TimeUnit.SECONDS)
+                    .writeTimeout(60, TimeUnit.SECONDS)
+                    .build();
+            
             Gson gson = new GsonBuilder().setPrettyPrinting().create();
             Retrofit retrofit = new Retrofit.Builder()
                     .baseUrl(API_BASE_URL)
+                    .client(okHttpClient)
                     .addConverterFactory(GsonConverterFactory.create(gson))
                     .build();
 
@@ -229,15 +253,27 @@ public class SessionUploadJobService extends JobService {
                         prefs.edit()
                             .putString(KEY_LAST_SUCCESSFUL_UPLOAD_DATE, uploadDate)
                             .putBoolean(KEY_UPLOAD_IN_PROGRESS, false)
+                            .remove("upload_start_time")
                             .apply();
                         Log.d(TAG, "✅ Marked " + uploadDate + " as successfully uploaded.");
                         
                         // Cancel any pending retry jobs since we succeeded
                         cancelRetryJob();
                         
+                        // Cancel any duplicate main upload jobs that might have been scheduled
+                        cancelDuplicateUploadJobs();
+                        
                         // Save current day from upload response
                         ModelStorageService.saveCurrentDay(SessionUploadJobService.this, uploadResponse.current_day);
                         Log.d(TAG, "Current day: " + uploadResponse.current_day);
+                        
+                        // Save baseline stats from upload response (ensures they're always available)
+                        if (uploadResponse.baseline_stats != null) {
+                            Log.d(TAG, "✅ Saving baseline stats from upload response...");
+                            ModelStorageService.saveBaselineStats(SessionUploadJobService.this, uploadResponse.baseline_stats);
+                        } else {
+                            Log.w(TAG, "⚠️ No baseline stats in upload response");
+                        }
                         
                         // Save updated Q-table and metadata from upload response
                         if (uploadResponse.updated_model != null) {
@@ -301,8 +337,11 @@ public class SessionUploadJobService extends JobService {
                  * Handle upload failure - schedule 1-minute retry until successful
                  */
                 private void handleUploadFailure(JobParameters params, SharedPreferences prefs) {
-                    // Clear in-progress flag so retry can proceed
-                    prefs.edit().putBoolean(KEY_UPLOAD_IN_PROGRESS, false).apply();
+                    // Clear in-progress flag and timestamp so retry can proceed
+                    prefs.edit()
+                        .putBoolean(KEY_UPLOAD_IN_PROGRESS, false)
+                        .remove("upload_start_time")
+                        .apply();
                     
                     Log.d(TAG, "⏳ Will retry upload in 1 minute...");
                     Log.d(TAG, "========== UPLOAD JOB FAILED (RETRY SCHEDULED) ==========\n");
@@ -318,9 +357,12 @@ public class SessionUploadJobService extends JobService {
             Log.e(TAG, "❌ Error in uploadSessions", e);
             Log.d(TAG, "========== UPLOAD JOB FAILED (EXCEPTION) ==========\n");
             
-            // Clear in-progress flag and schedule retry
+            // Clear in-progress flag and timestamp, then schedule retry
             SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-            prefs.edit().putBoolean(KEY_UPLOAD_IN_PROGRESS, false).apply();
+            prefs.edit()
+                .putBoolean(KEY_UPLOAD_IN_PROGRESS, false)
+                .remove("upload_start_time")
+                .apply();
             
             scheduleRetryJob();
             jobFinished(params, false); // Don't use system reschedule
@@ -337,6 +379,7 @@ public class SessionUploadJobService extends JobService {
         JobInfo.Builder builder = new JobInfo.Builder(RETRY_JOB_ID, new ComponentName(this, SessionUploadJobService.class))
                 .setMinimumLatency(RETRY_DELAY_MS)  // Wait 1 minute before retry
                 .setOverrideDeadline(RETRY_DELAY_MS * 2)  // Must run within 2 minutes
+                .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)  // REQUIRED: Ensure network is available
                 .setPersisted(true);  // Survive reboots
         
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -360,6 +403,20 @@ public class SessionUploadJobService extends JobService {
         JobScheduler jobScheduler = (JobScheduler) getSystemService(Context.JOB_SCHEDULER_SERVICE);
         jobScheduler.cancel(RETRY_JOB_ID);
         Log.d(TAG, "✅ Cancelled pending retry jobs (upload succeeded)");
+    }
+    
+    /**
+     * Cancel any duplicate upload jobs that might have been scheduled
+     */
+    private void cancelDuplicateUploadJobs() {
+        try {
+            JobScheduler jobScheduler = (JobScheduler) getSystemService(Context.JOB_SCHEDULER_SERVICE);
+            // Cancel the main upload job (ID 100) to prevent duplicate runs
+            jobScheduler.cancel(100); // UPLOAD_JOB_ID from BootReceiver
+            Log.d(TAG, "✅ Cancelled any duplicate main upload jobs");
+        } catch (Exception e) {
+            Log.e(TAG, "Error cancelling duplicate upload jobs", e);
+        }
     }
 
     /**

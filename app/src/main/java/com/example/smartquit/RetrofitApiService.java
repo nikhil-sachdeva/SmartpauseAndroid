@@ -168,7 +168,7 @@ public interface RetrofitApiService {
         public BaselineStats baseline_stats;
         public java.util.Map<String, Object> reward_config;
         public java.util.List<String> social_media_apps;
-        public String agent_data;  // Serialized model data (JSON or hex)
+        public Object agent_data;  // Can be JSON object or string - Q-table data
         public String format;  // "json" or "binary"
     }
 

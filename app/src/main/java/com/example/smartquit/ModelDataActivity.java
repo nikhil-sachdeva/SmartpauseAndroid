@@ -51,7 +51,7 @@ public class ModelDataActivity extends AppCompatActivity {
     private OkHttpClient httpClient;
     private JSONObject currentQTable;
 
-    private static final String BASE_URL = "https://smartquit-cyber.onrender.com";
+    private static final String BASE_URL = "https://smartpauseappv2.vercel.app";
     private static final String PREFS_NAME = "SmartQuitPrefs";
     private static final String KEY_USER_ID = "user_id";
 

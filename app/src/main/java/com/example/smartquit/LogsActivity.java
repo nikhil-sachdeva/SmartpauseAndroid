@@ -29,7 +29,7 @@ import retrofit2.converter.gson.GsonConverterFactory;
 public class LogsActivity extends AppCompatActivity {
     
     private static final String TAG = "LogsActivity";
-    private static final String API_BASE_URL = "https://smartquit-cyber.onrender.com";
+    private static final String API_BASE_URL = "https://smartpauseappv2.vercel.app";
     private static final String PREFS_NAME = "SmartQuitPrefs";
     private static final String KEY_USER_ID = "user_id";
     private static final int PAGE_SIZE = 50;

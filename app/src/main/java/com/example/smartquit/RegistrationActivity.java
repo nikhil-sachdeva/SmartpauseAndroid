@@ -47,7 +47,7 @@ public class RegistrationActivity extends AppCompatActivity {
     private List<String> selectedApps = new ArrayList<>(); // Stores package IDs
     private java.util.Map<String, String> appNameToPackageId = new java.util.HashMap<>(); // Maps display names to package IDs
     private String userId;
-    private static final String API_BASE_URL = "https://smartquit-cyber.onrender.com"; // Change to your backend URL
+    private static final String API_BASE_URL = "https://smartpauseappv2.vercel.app";
     private static final String PREFS_NAME = "SmartQuitPrefs";
     private static final String KEY_USER_ID = "user_id";
     private static final String KEY_REGISTERED = "is_registered";
@@ -91,8 +91,14 @@ public class RegistrationActivity extends AppCompatActivity {
             
             for (ResolveInfo resolveInfo : resolveInfoList) {
                 try {
-                    String appName = resolveInfo.loadLabel(packageManager).toString();
                     String packageId = resolveInfo.activityInfo.packageName;
+                    
+                    // Skip SmartPause itself from the list
+                    if (packageId.equals(getPackageName())) {
+                        continue;
+                    }
+                    
+                    String appName = resolveInfo.loadLabel(packageManager).toString();
                     Drawable icon = resolveInfo.loadIcon(packageManager);
 
                     // Scale icon to fixed 20x20 size
@@ -258,6 +264,9 @@ public class RegistrationActivity extends AppCompatActivity {
                     editor.putString(KEY_USER_ID, userId);
                     editor.putBoolean(KEY_REGISTERED, true);
                     
+                    // Save registration timestamp for test mode time-based intervention
+                    editor.putLong("registration_timestamp", System.currentTimeMillis());
+                    
                     // Save test mode allocation
                     editor.putBoolean("is_test_mode", response.body().is_test_mode);
                     
@@ -266,10 +275,8 @@ public class RegistrationActivity extends AppCompatActivity {
                     editor.putString(KEY_APPS_TO_MONITOR, appsJsonArray.toString());
                     editor.apply();
 
-                    // Show success message with mode allocation
+                    // Log mode allocation (private - not shown to user)
                     String mode = response.body().is_test_mode ? "TEST" : "PRODUCTION";
-                    Toast.makeText(RegistrationActivity.this, 
-                            "Registration successful! Mode: " + mode, Toast.LENGTH_LONG).show();
                     
                     Log.d("REGISTRATION", "User registered: " + userId);
                     Log.d("REGISTRATION", "Apps to monitor: " + response.body().apps_to_monitor);
