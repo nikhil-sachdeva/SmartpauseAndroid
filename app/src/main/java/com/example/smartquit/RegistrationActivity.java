@@ -202,6 +202,12 @@ public class RegistrationActivity extends AppCompatActivity {
             return;
         }
 
+        // Validate at least one app is selected
+        if (selectedApps.isEmpty()) {
+            Toast.makeText(this, "Please select at least one app to monitor", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
         Log.d("REGISTRATION", "========== REGISTRATION DEBUG ==========");
         Log.d("REGISTRATION", "Selected Apps Count: " + selectedApps.size());
         Log.d("REGISTRATION", "Selected Apps: " + selectedApps.toString());
@@ -216,12 +222,12 @@ public class RegistrationActivity extends AppCompatActivity {
                 Build.DEVICE,
                 Build.MODEL,
                 Build.VERSION.RELEASE,
-                "1.0" // App version
+                "1.1" // App version
         );
 
-        // Create registration request - ALWAYS send apps list, even if empty
-        java.util.List<String> appsToSend = selectedApps.isEmpty() ? null : new ArrayList<>(selectedApps);
-        Log.d("REGISTRATION", "Apps to send (null if empty): " + appsToSend);
+        // Create registration request - selectedApps is guaranteed non-empty due to earlier validation
+        java.util.List<String> appsToSend = new ArrayList<>(selectedApps);
+        Log.d("REGISTRATION", "Apps to send: " + appsToSend);
         
         // Random allocation between test and production mode (50/50 split)
         boolean isTestMode = Math.random() < 0.5;
@@ -281,6 +287,12 @@ public class RegistrationActivity extends AppCompatActivity {
                     Log.d("REGISTRATION", "User registered: " + userId);
                     Log.d("REGISTRATION", "Apps to monitor: " + response.body().apps_to_monitor);
                     Log.d("REGISTRATION", "Test mode: " + response.body().is_test_mode);
+                    
+                    // Schedule 3AM upload alarm (critical for Xiaomi/MIUI devices)
+                    Log.d("REGISTRATION", "Scheduling 3AM upload alarm...");
+                    UploadAlarmReceiver.scheduleNext3AMUpload(RegistrationActivity.this);
+                    Log.d("REGISTRATION", "✅ 3AM upload alarm scheduled successfully");
+                    
                     Log.d("REGISTRATION", "========== END REGISTRATION DEBUG ==========\n");
 
                     // Launch MainActivity

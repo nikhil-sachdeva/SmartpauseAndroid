@@ -96,6 +96,16 @@
                 <action android:name="com.example.smartquit.RECURRING_SERVICE_CHECK" />
             </intent-filter>
         </receiver>
+        <!-- Upload alarm receiver for reliable 3AM uploads on Xiaomi/MIUI devices -->
+        <receiver
+            android:name=".UploadAlarmReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.example.smartquit.ACTION_UPLOAD_3AM" />
+                <action android:name="com.example.smartquit.ACTION_UPLOAD_RETRY" />
+            </intent-filter>
+        </receiver>
         <!-- WorkManager initializer for periodic service health checks -->
         <provider
             android:name="androidx.startup.InitializationProvider"

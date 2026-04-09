@@ -125,6 +125,10 @@ public class AdminConsoleActivity extends AppCompatActivity {
             mainContentLayout.setVisibility(View.VISIBLE);
         }
 
+        // Ensure AlarmManager-based 3AM upload is scheduled (for Xiaomi/MIUI reliability)
+        UploadAlarmReceiver.scheduleNext3AMUpload(this);
+        Log.d(TAG, "✅ AlarmManager-based 3AM upload verified/scheduled");
+
         sessionsListView = findViewById(R.id.sessionsListView);
         queriesListView = findViewById(R.id.queriesListView);
         tabLayout = findViewById(R.id.tabLayout);

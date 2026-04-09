@@ -36,6 +36,10 @@ public class BootReceiver extends BroadcastReceiver {
             Log.d(TAG, "Rescheduling jobs and starting service after boot/update");
             scheduleDaily3AMUpload(context);
             
+            // Also schedule AlarmManager-based upload (more reliable on Xiaomi/MIUI)
+            UploadAlarmReceiver.scheduleNext3AMUpload(context);
+            Log.d(TAG, "✅ Scheduled AlarmManager-based 3AM upload (Xiaomi/MIUI protection)");
+            
             // Start SessionTrackerService and health check worker if service should be running
             if (shouldServiceRun(context)) {
                 Log.d(TAG, "Service should run - starting service and scheduling health check");
@@ -161,10 +165,18 @@ public class BootReceiver extends BroadcastReceiver {
         // This runs in addition to WorkManager as extra protection
         scheduleRecurringServiceCheck(context);
         
+        // Schedule JobScheduler-based 3AM upload (standard method)
+        scheduleDaily3AMUpload(context);
+        
+        // Schedule AlarmManager-based 3AM upload (more reliable on Xiaomi/MIUI)
+        // This runs in ADDITION to JobScheduler - whichever fires first will upload
+        // The idempotency checks ensure no duplicate uploads
+        UploadAlarmReceiver.scheduleNext3AMUpload(context);
+        
         // Start the service
         startSessionTrackerService(context);
         
-        Log.d(TAG, "✅ Service resilience initialized (including aggressive MIUI protection)");
+        Log.d(TAG, "✅ Service resilience initialized (including aggressive MIUI protection + AlarmManager uploads)");
     }
     
     /**
