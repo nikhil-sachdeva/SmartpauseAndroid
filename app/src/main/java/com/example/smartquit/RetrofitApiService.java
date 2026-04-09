@@ -33,32 +33,13 @@ public interface RetrofitApiService {
      */
     class RegistrationRequest {
         public String user_id;
-        public DeviceInfo device_info;
         public java.util.List<String> apps_to_monitor;
         public boolean is_test_mode;  // Random allocation for A/B testing
         
-        public RegistrationRequest(String userId, DeviceInfo deviceInfo, java.util.List<String> appsToMonitor, boolean isTestMode) {
+        public RegistrationRequest(String userId, java.util.List<String> appsToMonitor, boolean isTestMode) {
             this.user_id = userId;
-            this.device_info = deviceInfo;
             this.apps_to_monitor = appsToMonitor;
             this.is_test_mode = isTestMode;
-        }
-    }
-    
-    /**
-     * Device information for registration
-     */
-    class DeviceInfo {
-        public String device_name;
-        public String device_model;
-        public String android_version;
-        public String app_version;
-        
-        public DeviceInfo(String deviceName, String deviceModel, String androidVersion, String appVersion) {
-            this.device_name = deviceName;
-            this.device_model = deviceModel;
-            this.android_version = androidVersion;
-            this.app_version = appVersion;
         }
     }
     

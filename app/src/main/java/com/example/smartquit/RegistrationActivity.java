@@ -10,7 +10,6 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
-import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 import android.widget.Button;
@@ -217,14 +216,6 @@ public class RegistrationActivity extends AppCompatActivity {
         progressBar.setVisibility(ProgressBar.VISIBLE);
         registerButton.setEnabled(false);
 
-        // Collect device info
-        RetrofitApiService.DeviceInfo deviceInfo = new RetrofitApiService.DeviceInfo(
-                Build.DEVICE,
-                Build.MODEL,
-                Build.VERSION.RELEASE,
-                "1.1" // App version
-        );
-
         // Create registration request - selectedApps is guaranteed non-empty due to earlier validation
         java.util.List<String> appsToSend = new ArrayList<>(selectedApps);
         Log.d("REGISTRATION", "Apps to send: " + appsToSend);
@@ -235,7 +226,6 @@ public class RegistrationActivity extends AppCompatActivity {
         
         RetrofitApiService.RegistrationRequest request = new RetrofitApiService.RegistrationRequest(
                 userId,
-                deviceInfo,
                 appsToSend,
                 isTestMode
         );
