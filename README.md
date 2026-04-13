@@ -43,3 +43,11 @@ Android application for intelligent screen time management using reinforcement l
 | `RegistrationActivity` | User onboarding and app selection |
 | `MainActivity` | Dashboard showing usage stats |
 | `AdminConsoleActivity` | Debug tools and manual controls |
+
+## Screenshots
+
+<p align="center">
+  <img src="static/sp_screenshot_1.png" width="250" alt="Screenshot 1"/>
+  &nbsp;&nbsp;&nbsp;
+  <img src="static/sp_screenshot_2.png" width="250" alt="Screenshot 2"/>
+</p>
