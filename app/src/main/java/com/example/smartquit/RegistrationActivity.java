@@ -224,10 +224,19 @@ public class RegistrationActivity extends AppCompatActivity {
         boolean isTestMode = Math.random() < 0.5;
         Log.d("REGISTRATION", "Randomly allocated to: " + (isTestMode ? "TEST" : "PRODUCTION") + " mode");
         
+        // Get app version
+        String appVersion = "unknown";
+        try {
+            appVersion = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (PackageManager.NameNotFoundException e) {
+            Log.e("REGISTRATION", "Could not get app version", e);
+        }
+        
         RetrofitApiService.RegistrationRequest request = new RetrofitApiService.RegistrationRequest(
                 userId,
                 appsToSend,
-                isTestMode
+                isTestMode,
+                new RetrofitApiService.DeviceInfo(appVersion)
         );
 
         Log.d("REGISTRATION", "Request created. Apps field: " + request.apps_to_monitor);

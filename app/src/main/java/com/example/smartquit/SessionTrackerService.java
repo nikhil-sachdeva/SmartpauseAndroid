@@ -1,5 +1,6 @@
 package com.example.smartquit;
 
+import android.app.KeyguardManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -259,8 +260,8 @@ public class SessionTrackerService extends Service {
             @Override
             public void run() {
                 try {
-                    // Only track if screen is unlocked
-                    if (!isScreenUnlocked) {
+                    // Only track if screen is interactive (handles AOD, Doze, etc.)
+                    if (!isDeviceInteractive()) {
                         handler.postDelayed(this, delay);
                         return;
                     }
@@ -1826,7 +1827,7 @@ public class SessionTrackerService extends Service {
                 // Update state for screen unlock event
                 updateCurrentState("NULL");
                 
-                Log.d("SessionTrackerService", "Screen unlocked - resuming tracking with state: " + currentStateArray);
+                Log.d("SessionTrackerService", "Screen unlocked, last state: " + currentStateArray);
             }
         }
     }
@@ -2037,5 +2038,35 @@ public class SessionTrackerService extends Service {
             Log.e("SessionTrackerService", "❌ Failed to release WakeLock: " + e.getMessage());
             // Don't crash - just log
         }
+    }
+    
+    /**
+     * Check if device screen is interactive and unlocked.
+     * Returns false during:
+     * - Screen off
+     * - Always-On Display (AOD)
+     * - Doze/Ambient mode
+     * - Lock screen showing
+     */
+    private boolean isDeviceInteractive() {
+        try {
+            // Check if screen is interactive (not AOD/Doze/screen off)
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null && !pm.isInteractive()) {
+                return false;
+            }
+            
+            // Check if device is locked (lock screen showing)
+            KeyguardManager km = (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
+            if (km != null && km.isKeyguardLocked()) {
+                return false;
+            }
+            
+            return true;
+        } catch (Exception e) {
+            Log.e("SessionTrackerService", "Error checking interactive state: " + e.getMessage());
+        }
+        // Default to broadcast-based state if system services fail
+        return isScreenUnlocked;
     }
 }

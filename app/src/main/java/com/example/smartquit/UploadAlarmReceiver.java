@@ -241,6 +241,30 @@ public class UploadAlarmReceiver extends BroadcastReceiver {
                 if (response.isSuccessful() && response.body() != null) {
                     Log.d(TAG, "✅ HTTP response successful: " + response.code());
                     handleUploadSuccess(context, db, prefs, response.body(), wakeLock);
+                } else if (response.code() == 429) {
+                    // Rate limited - means we already uploaded recently, no need to retry
+                    Log.d(TAG, "⏳ HTTP 429 Rate Limited - already uploaded recently, skipping retries");
+                    prefs.edit()
+                        .putBoolean(KEY_UPLOAD_IN_PROGRESS, false)
+                        .remove("upload_start_time")
+                        .apply();
+                    
+                    // Log to Firebase
+                    try {
+                        android.os.Bundle bundle = new android.os.Bundle();
+                        bundle.putString("date", getTodayDate());
+                        bundle.putString("trigger", "alarm_manager");
+                        bundle.putString("manufacturer", Build.MANUFACTURER);
+                        FirebaseAnalytics.getInstance(context).logEvent("upload_rate_limited", bundle);
+                    } catch (Exception e) {
+                        Log.w(TAG, "Failed to log to Firebase");
+                    }
+                    
+                    // Cancel retries and schedule next 3AM (don't retry since we already uploaded)
+                    cancelRetryAlarm(context);
+                    scheduleNext3AMUpload(context);
+                    releaseWakeLock(wakeLock);
+                    Log.d(TAG, "========== UPLOAD SKIPPED (RATE LIMITED) ==========\n");
                 } else {
                     String errorBody = "";
                     try {

@@ -29,17 +29,30 @@ public interface RetrofitApiService {
     Call<WeeklyUsageResponse> getWeeklyUsage(@retrofit2.http.Path("user_id") String userId);
     
     /**
+     * Device info for registration
+     */
+    class DeviceInfo {
+        public String app_version;
+        
+        public DeviceInfo(String appVersion) {
+            this.app_version = appVersion;
+        }
+    }
+    
+    /**
      * Request body for user registration
      */
     class RegistrationRequest {
         public String user_id;
         public java.util.List<String> apps_to_monitor;
         public boolean is_test_mode;  // Random allocation for A/B testing
+        public DeviceInfo device_info;
         
-        public RegistrationRequest(String userId, java.util.List<String> appsToMonitor, boolean isTestMode) {
+        public RegistrationRequest(String userId, java.util.List<String> appsToMonitor, boolean isTestMode, DeviceInfo deviceInfo) {
             this.user_id = userId;
             this.apps_to_monitor = appsToMonitor;
             this.is_test_mode = isTestMode;
+            this.device_info = deviceInfo;
         }
     }
     
