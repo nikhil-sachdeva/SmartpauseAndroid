@@ -178,19 +178,42 @@ public class SessionTrackerService extends Service {
         screenLockReceiver = new ScreenLockReceiver();
         IntentFilter filter = new IntentFilter(Intent.ACTION_SCREEN_ON);
         filter.addAction(Intent.ACTION_SCREEN_OFF);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            registerReceiver(screenLockReceiver, filter, Context.RECEIVER_EXPORTED);
-        } else {
-            registerReceiver(screenLockReceiver, filter);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                registerReceiver(screenLockReceiver, filter, Context.RECEIVER_EXPORTED);
+            } else {
+                registerReceiver(screenLockReceiver, filter);
+            }
+        } catch (SecurityException se) {
+            Log.w("SessionTrackerService", "SecurityException registering screen lock receiver: " + se.getMessage());
+            try { firebaseCrashlytics.recordException(se); } catch (Exception ignored) {}
+            try {
+                // Fallback: try registering without exported flag
+                registerReceiver(screenLockReceiver, filter);
+            } catch (Exception ignored) {}
+        } catch (Exception e) {
+            Log.w("SessionTrackerService", "Failed to register screen lock receiver: " + e.getMessage());
+            try { firebaseCrashlytics.recordException(e); } catch (Exception ignored) {}
         }
         
         // Register model update receiver
         modelUpdateReceiver = new ModelUpdateReceiver();
         IntentFilter modelUpdateFilter = new IntentFilter("com.example.smartquit.MODEL_UPDATED");
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            registerReceiver(modelUpdateReceiver, modelUpdateFilter, Context.RECEIVER_EXPORTED);
-        } else {
-            registerReceiver(modelUpdateReceiver, modelUpdateFilter);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                registerReceiver(modelUpdateReceiver, modelUpdateFilter, Context.RECEIVER_EXPORTED);
+            } else {
+                registerReceiver(modelUpdateReceiver, modelUpdateFilter);
+            }
+        } catch (SecurityException se) {
+            Log.w("SessionTrackerService", "SecurityException registering model update receiver: " + se.getMessage());
+            try { firebaseCrashlytics.recordException(se); } catch (Exception ignored) {}
+            try {
+                registerReceiver(modelUpdateReceiver, modelUpdateFilter);
+            } catch (Exception ignored) {}
+        } catch (Exception e) {
+            Log.w("SessionTrackerService", "Failed to register model update receiver: " + e.getMessage());
+            try { firebaseCrashlytics.recordException(e); } catch (Exception ignored) {}
         }
         
         Log.d("SessionTrackerService", "Service created and started in foreground");
@@ -1457,32 +1480,37 @@ public class SessionTrackerService extends Service {
 
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationManager notificationManager = getSystemService(NotificationManager.class);
-            if (notificationManager == null) {
-                Log.e("SessionTrackerService", "NotificationManager is null - cannot create channel");
-                return;
+            try {
+                NotificationManager notificationManager = getSystemService(NotificationManager.class);
+                if (notificationManager == null) {
+                    Log.e("SessionTrackerService", "NotificationManager is null - cannot create channel");
+                    return;
+                }
+
+                // Delete existing channel if it exists (to reset any user changes)
+                NotificationChannel existingChannel = notificationManager.getNotificationChannel(CHANNEL_ID);
+                if (existingChannel != null && existingChannel.getImportance() < NotificationManager.IMPORTANCE_LOW) {
+                    // User has disabled the channel - recreate it
+                    Log.w("SessionTrackerService", "Notification channel was disabled - recreating");
+                    notificationManager.deleteNotificationChannel(CHANNEL_ID);
+                }
+
+                NotificationChannel channel = new NotificationChannel(
+                        CHANNEL_ID,
+                        "SmartPause Session Tracking",
+                        NotificationManager.IMPORTANCE_LOW);  // LOW = silent but always visible
+                channel.setDescription("Required for SmartPause to track your app usage. Disabling may stop the service.");
+                channel.setShowBadge(false);
+                channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);  // Show on lock screen
+                channel.setBypassDnd(false);  // Don't bypass DND
+                channel.enableVibration(false);  // No vibration for this notification
+                channel.enableLights(false);  // No LED
+                notificationManager.createNotificationChannel(channel);
+                Log.d("SessionTrackerService", "✅ Notification channel created/verified");
+            } catch (Exception e) {
+                Log.w("SessionTrackerService", "Failed to create/verify notification channel: " + e.getMessage());
+                try { firebaseCrashlytics.recordException(e); } catch (Exception ignored) {}
             }
-            
-            // Delete existing channel if it exists (to reset any user changes)
-            NotificationChannel existingChannel = notificationManager.getNotificationChannel(CHANNEL_ID);
-            if (existingChannel != null && existingChannel.getImportance() < NotificationManager.IMPORTANCE_LOW) {
-                // User has disabled the channel - recreate it
-                Log.w("SessionTrackerService", "Notification channel was disabled - recreating");
-                notificationManager.deleteNotificationChannel(CHANNEL_ID);
-            }
-            
-            NotificationChannel channel = new NotificationChannel(
-                    CHANNEL_ID,
-                    "SmartPause Session Tracking",
-                    NotificationManager.IMPORTANCE_LOW);  // LOW = silent but always visible
-            channel.setDescription("Required for SmartPause to track your app usage. Disabling may stop the service.");
-            channel.setShowBadge(false);
-            channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);  // Show on lock screen
-            channel.setBypassDnd(false);  // Don't bypass DND
-            channel.enableVibration(false);  // No vibration for this notification
-            channel.enableLights(false);  // No LED
-            notificationManager.createNotificationChannel(channel);
-            Log.d("SessionTrackerService", "✅ Notification channel created/verified");
         }
     }
     
@@ -1753,6 +1781,16 @@ public class SessionTrackerService extends Service {
         if (BootReceiver.shouldServiceRun(this)) {
             BootReceiver.scheduleServiceRestart(this, 30000); // 30 seconds
         }
+        // Free cached model data to reduce memory footprint
+        try {
+            cachedQTable = null;
+            cachedBaselineStats = null;
+            cachedEpsilon = 0.1f;
+            firebaseCrashlytics.log("Freed cached model data due to low memory");
+            System.gc();
+        } catch (Exception e) {
+            Log.w("SessionTrackerService", "Failed to free caches on low memory: " + e.getMessage());
+        }
     }
     
     @Override
@@ -1767,7 +1805,17 @@ public class SessionTrackerService extends Service {
             bundle.putInt("trim_level", level);
             bundle.putInt("android_sdk_version", Build.VERSION.SDK_INT);
             firebaseAnalytics.logEvent("service_memory_trim", bundle);
-            
+            // Free caches for moderate trims and above to avoid service being killed
+            try {
+                cachedQTable = null;
+                cachedBaselineStats = null;
+                cachedEpsilon = 0.1f;
+                firebaseCrashlytics.log("Freed cached model data on memory trim level: " + level);
+                System.gc();
+            } catch (Exception e) {
+                Log.w("SessionTrackerService", "Failed to free caches on trim: " + e.getMessage());
+            }
+
             // If we're at critical level, schedule restart just in case
             if (level >= TRIM_MEMORY_COMPLETE && BootReceiver.shouldServiceRun(this)) {
                 BootReceiver.scheduleServiceRestart(this, 10000);

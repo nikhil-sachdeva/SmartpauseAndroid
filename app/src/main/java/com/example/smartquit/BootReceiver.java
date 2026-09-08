@@ -10,6 +10,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Build;
+import com.google.firebase.analytics.FirebaseAnalytics;
 import android.util.Log;
 
 import java.util.Calendar;
@@ -106,15 +107,70 @@ public class BootReceiver extends BroadcastReceiver {
                 flags |= PendingIntent.FLAG_IMMUTABLE;
             }
             
-            PendingIntent pendingIntent = PendingIntent.getBroadcast(
-                    context, SERVICE_RESTART_ALARM_ID, intent, flags);
-            
+            PendingIntent pendingIntent = null;
+            try {
+                pendingIntent = PendingIntent.getBroadcast(
+                        context, SERVICE_RESTART_ALARM_ID, intent, flags);
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to create PendingIntent for service restart: " + e.getMessage());
+                try { com.google.firebase.crashlytics.FirebaseCrashlytics.getInstance().recordException(e); } catch (Exception ignored) {}
+                try {
+                    android.os.Bundle b = new android.os.Bundle();
+                    b.putString("reason", "pending_intent_creation_failed");
+                    b.putString("action", intent != null ? intent.getAction() : "unknown");
+                    b.putString("manufacturer", Build.MANUFACTURER);
+                    b.putInt("android_sdk", Build.VERSION.SDK_INT);
+                    FirebaseAnalytics.getInstance(context).logEvent("pending_intent_failure", b);
+                } catch (Exception ignored) {}
+            }
+
             long triggerTime = System.currentTimeMillis() + delayMillis;
-            
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent);
-            } else {
-                alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent);
+
+            try {
+                if (pendingIntent == null) throw new IllegalStateException("PendingIntent null");
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    if (alarmManager.canScheduleExactAlarms()) {
+                        alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent);
+                    } else {
+                        Log.w(TAG, "Exact alarms denied for service restart - using inexact fallback");
+                        try {
+                            android.os.Bundle b = new android.os.Bundle();
+                            b.putString("alarm_type", "service_restart");
+                            b.putString("reason", "exact_alarms_denied");
+                            b.putString("manufacturer", Build.MANUFACTURER);
+                            b.putInt("android_sdk", Build.VERSION.SDK_INT);
+                            FirebaseAnalytics.getInstance(context).logEvent("exact_alarm_fallback", b);
+                        } catch (Exception ignored) {}
+                        alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent);
+                    }
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent);
+                } else {
+                    alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent);
+                }
+            } catch (SecurityException se) {
+                Log.e(TAG, "SecurityException scheduling service restart: " + se.getMessage());
+                try { com.google.firebase.crashlytics.FirebaseCrashlytics.getInstance().recordException(se); } catch (Exception ignored) {}
+                try {
+                    android.os.Bundle b = new android.os.Bundle();
+                    b.putString("alarm_type", "service_restart");
+                    b.putString("error", se.getMessage());
+                    b.putString("manufacturer", Build.MANUFACTURER);
+                    b.putInt("android_sdk", Build.VERSION.SDK_INT);
+                    FirebaseAnalytics.getInstance(context).logEvent("exact_alarm_security_exception", b);
+                } catch (Exception ignored) {}
+                try { if (pendingIntent != null) alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent); } catch (Exception ignored) {}
+            } catch (Exception e) {
+                Log.e(TAG, "Exception scheduling service restart: " + e.getMessage());
+                try { com.google.firebase.crashlytics.FirebaseCrashlytics.getInstance().recordException(e); } catch (Exception ignored) {}
+                try {
+                    android.os.Bundle b = new android.os.Bundle();
+                    b.putString("alarm_type", "service_restart");
+                    b.putString("error", e.getMessage());
+                    b.putString("manufacturer", Build.MANUFACTURER);
+                    b.putInt("android_sdk", Build.VERSION.SDK_INT);
+                    FirebaseAnalytics.getInstance(context).logEvent("exact_alarm_scheduling_exception", b);
+                } catch (Exception ignored) {}
             }
             
             Log.d(TAG, "✅ Service restart scheduled in " + delayMillis + "ms");
@@ -137,13 +193,23 @@ public class BootReceiver extends BroadcastReceiver {
                 flags |= PendingIntent.FLAG_IMMUTABLE;
             }
             
-            PendingIntent pendingIntent = PendingIntent.getBroadcast(
-                    context, SERVICE_RESTART_ALARM_ID, intent, flags);
-            
-            if (pendingIntent != null) {
-                alarmManager.cancel(pendingIntent);
-                pendingIntent.cancel();
-                Log.d(TAG, "✅ Service restart alarm cancelled");
+            try {
+                PendingIntent pendingIntent = PendingIntent.getBroadcast(
+                        context, SERVICE_RESTART_ALARM_ID, intent, flags);
+                if (pendingIntent != null) {
+                    try { alarmManager.cancel(pendingIntent); } catch (Exception ignored) {}
+                    try { pendingIntent.cancel(); } catch (Exception ignored) {}
+                    Log.d(TAG, "✅ Service restart alarm cancelled");
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to cancel service restart alarm: " + e.getMessage());
+                try {
+                    android.os.Bundle b = new android.os.Bundle();
+                    b.putString("reason", "pending_intent_cancel_failed");
+                    b.putString("manufacturer", Build.MANUFACTURER);
+                    b.putInt("android_sdk", Build.VERSION.SDK_INT);
+                    FirebaseAnalytics.getInstance(context).logEvent("pending_intent_cancel_failure", b);
+                } catch (Exception ignored) {}
             }
         } catch (Exception e) {
             Log.e(TAG, "❌ Failed to cancel service restart alarm: " + e.getMessage());
@@ -198,25 +264,48 @@ public class BootReceiver extends BroadcastReceiver {
                 flags |= PendingIntent.FLAG_IMMUTABLE;
             }
             
-            PendingIntent pendingIntent = PendingIntent.getBroadcast(
-                    context, RECURRING_CHECK_ALARM_ID, intent, flags);
-            
-            // Cancel any existing recurring alarm first
-            alarmManager.cancel(pendingIntent);
-            
-            // Schedule recurring alarm every 5 minutes using setRepeating
-            // Note: On Android 6+ exact alarms may be deferred during Doze, but this is still better than nothing
-            long triggerTime = System.currentTimeMillis() + RECURRING_CHECK_INTERVAL;
-            
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                // Use setExactAndAllowWhileIdle for first trigger, then reschedule in receiver
-                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent);
-            } else {
-                // Pre-M: use setRepeating
-                alarmManager.setRepeating(AlarmManager.RTC_WAKEUP, triggerTime, RECURRING_CHECK_INTERVAL, pendingIntent);
+            PendingIntent pendingIntent = null;
+            try {
+                pendingIntent = PendingIntent.getBroadcast(
+                        context, RECURRING_CHECK_ALARM_ID, intent, flags);
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to create PendingIntent for recurring check: " + e.getMessage());
+                try { com.google.firebase.crashlytics.FirebaseCrashlytics.getInstance().recordException(e); } catch (Exception ignored) {}
             }
-            
-            Log.d(TAG, "✅ Recurring service check alarm scheduled (every 5 minutes)");
+
+            // Cancel any existing recurring alarm first
+            try { if (pendingIntent != null) alarmManager.cancel(pendingIntent); } catch (Exception ignored) {}
+
+            // If we couldn't create a PendingIntent, skip scheduling to avoid crashes
+            if (pendingIntent == null) {
+                Log.e(TAG, "Cannot schedule recurring service check: PendingIntent creation failed");
+                return;
+            }
+
+            // Schedule recurring alarm every 5 minutes using setRepeating where appropriate
+            long triggerTime = System.currentTimeMillis() + RECURRING_CHECK_INTERVAL;
+
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    if (alarmManager.canScheduleExactAlarms()) {
+                        // Use an exact one-shot first trigger; the receiver reschedules
+                        alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent);
+                    } else {
+                        Log.w(TAG, "Exact alarms denied for recurring service check - scheduling inexact repeating fallback");
+                        try { com.google.firebase.crashlytics.FirebaseCrashlytics.getInstance().log("Recurring exact alarm denied"); } catch (Exception ignored) {}
+                        alarmManager.setInexactRepeating(AlarmManager.RTC_WAKEUP, triggerTime, RECURRING_CHECK_INTERVAL, pendingIntent);
+                    }
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent);
+                } else {
+                    alarmManager.setRepeating(AlarmManager.RTC_WAKEUP, triggerTime, RECURRING_CHECK_INTERVAL, pendingIntent);
+                }
+                Log.d(TAG, "✅ Recurring service check alarm scheduled (every 5 minutes)");
+            } catch (SecurityException se) {
+                Log.e(TAG, "SecurityException scheduling recurring service check: " + se.getMessage());
+                try { com.google.firebase.crashlytics.FirebaseCrashlytics.getInstance().recordException(se); } catch (Exception ignored) {}
+                try { alarmManager.setInexactRepeating(AlarmManager.RTC_WAKEUP, triggerTime, RECURRING_CHECK_INTERVAL, pendingIntent); } catch (Exception ignored) {}
+            }
         } catch (Exception e) {
             Log.e(TAG, "❌ Failed to schedule recurring service check: " + e.getMessage());
         }
@@ -231,6 +320,24 @@ public class BootReceiver extends BroadcastReceiver {
         
         // Cancel any existing upload jobs to prevent duplicates
         jobScheduler.cancel(UPLOAD_JOB_ID);
+        // Also cancel any AlarmManager-based upload alarms to avoid double triggers
+        try {
+            android.app.AlarmManager alarmManager = (android.app.AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+            if (alarmManager != null) {
+                Intent intent = new Intent(context, UploadAlarmReceiver.class);
+                intent.setAction(UploadAlarmReceiver.ACTION_UPLOAD_3AM);
+                int flags = PendingIntent.FLAG_NO_CREATE;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
+                try {
+                    PendingIntent pi = PendingIntent.getBroadcast(context, UploadAlarmReceiver.UPLOAD_ALARM_ID, intent, flags);
+                    if (pi != null) {
+                        try { alarmManager.cancel(pi); } catch (Exception ignored) {}
+                        try { pi.cancel(); } catch (Exception ignored) {}
+                        Log.d(TAG, "Cancelled AlarmManager 3AM upload to avoid duplicate triggers");
+                    }
+                } catch (Exception ignored) {}
+            }
+        } catch (Exception ignored) {}
         Log.d(TAG, "✅ Cancelled any existing upload jobs to prevent duplicates");
         
         // Calculate time until next 3 AM

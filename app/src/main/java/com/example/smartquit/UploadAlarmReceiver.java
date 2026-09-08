@@ -9,6 +9,8 @@ import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.PowerManager;
 import android.util.Log;
+import android.provider.Settings;
+import android.net.Uri;
 
 import com.google.firebase.analytics.FirebaseAnalytics;
 import com.google.firebase.crashlytics.FirebaseCrashlytics;
@@ -55,8 +57,8 @@ public class UploadAlarmReceiver extends BroadcastReceiver {
     public static final String ACTION_UPLOAD_3AM = "com.example.smartquit.ACTION_UPLOAD_3AM";
     public static final String ACTION_UPLOAD_RETRY = "com.example.smartquit.ACTION_UPLOAD_RETRY";
     
-    private static final int UPLOAD_ALARM_ID = 300;
-    private static final int RETRY_ALARM_ID = 301;
+    public static final int UPLOAD_ALARM_ID = 300;
+    public static final int RETRY_ALARM_ID = 301;
     private static final long RETRY_DELAY_MS = 60000; // 1 minute
     private static final int MAX_RETRIES = 10;
 
@@ -152,6 +154,16 @@ public class UploadAlarmReceiver extends BroadcastReceiver {
         // Perform upload in background thread
         new Thread(() -> {
             try {
+                // Acquire atomic upload guard to avoid races across schedulers/processes
+                String runId = UploadGuard.tryAcquire(context);
+                if (runId == null) {
+                    Log.w(TAG, "Another upload is already in progress or completed for today. Aborting this run.");
+                    prefs.edit().putBoolean(KEY_UPLOAD_IN_PROGRESS, false).apply();
+                    releaseWakeLock(wakeLock);
+                    scheduleNext3AMUpload(context);
+                    return;
+                }
+
                 AppDatabase db = AppDatabase.getDatabase(context);
                 
                 // Get all sessions
@@ -240,7 +252,7 @@ public class UploadAlarmReceiver extends BroadcastReceiver {
                 
                 if (response.isSuccessful() && response.body() != null) {
                     Log.d(TAG, "✅ HTTP response successful: " + response.code());
-                    handleUploadSuccess(context, db, prefs, response.body(), wakeLock);
+                    handleUploadSuccess(context, db, prefs, response.body(), wakeLock, runId);
                 } else if (response.code() == 429) {
                     // Rate limited - means we already uploaded recently, no need to retry
                     Log.d(TAG, "⏳ HTTP 429 Rate Limited - already uploaded recently, skipping retries");
@@ -275,19 +287,21 @@ public class UploadAlarmReceiver extends BroadcastReceiver {
                         errorBody = "Could not read error body";
                     }
                     Log.e(TAG, "❌ Upload failed: HTTP " + response.code() + " - " + errorBody);
-                    handleUploadFailure(context, prefs, wakeLock, retryCount);
+                    handleUploadFailure(context, prefs, wakeLock, retryCount, runId);
                 }
                 
             } catch (Exception e) {
                 Log.e(TAG, "❌ Upload exception: " + e.getMessage(), e);
                 FirebaseCrashlytics.getInstance().recordException(e);
-                handleUploadFailure(context, prefs, wakeLock, retryCount);
+                // If runId exists, clear it; otherwise nothing to do
+                try { handleUploadFailure(context, prefs, wakeLock, retryCount, null); } catch (Exception ignored) {}
             }
         }).start();
     }
     
-    private void handleUploadSuccess(Context context, AppDatabase db, SharedPreferences prefs, 
-                                      RetrofitApiService.UploadResponse response, PowerManager.WakeLock wakeLock) {
+    private void handleUploadSuccess(Context context, AppDatabase db, SharedPreferences prefs,
+                                      RetrofitApiService.UploadResponse response, PowerManager.WakeLock wakeLock,
+                                      String runId) {
         Log.d(TAG, "========== UPLOAD SUCCESS ==========");
         Log.d(TAG, "✅ Upload completed at: " + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date()));
         Log.d(TAG, "Response current_day: " + response.current_day);
@@ -334,16 +348,19 @@ public class UploadAlarmReceiver extends BroadcastReceiver {
         
         // Cancel any retry alarms
         cancelRetryAlarm(context);
-        
+
         // Schedule next 3AM upload
         scheduleNext3AMUpload(context);
-        
+
+        // Mark success in upload guard
+        try { UploadGuard.markSuccess(context, runId); } catch (Exception ignored) {}
+
         releaseWakeLock(wakeLock);
-        Log.d(TAG, "========== UPLOAD COMPLETED SUCCESSFULLY ==========\n");
+        Log.d(TAG, "========== UPLOAD COMPLETED SUCCESSFULLY ==========" + "\n");
     }
     
-    private void handleUploadFailure(Context context, SharedPreferences prefs, 
-                                      PowerManager.WakeLock wakeLock, int retryCount) {
+    private void handleUploadFailure(Context context, SharedPreferences prefs,
+                                      PowerManager.WakeLock wakeLock, int retryCount, String runId) {
         prefs.edit()
             .putBoolean(KEY_UPLOAD_IN_PROGRESS, false)
             .remove("upload_start_time")
@@ -367,7 +384,9 @@ public class UploadAlarmReceiver extends BroadcastReceiver {
         }
         
         releaseWakeLock(wakeLock);
-        Log.d(TAG, "========== UPLOAD FAILED ==========\n");
+        // Clear in-progress guard if ours or stale
+        try { UploadGuard.clearIfMatches(context, runId); } catch (Exception ignored) {}
+        Log.d(TAG, "========== UPLOAD FAILED ==========" + "\n");
     }
     
     private void releaseWakeLock(PowerManager.WakeLock wakeLock) {
@@ -422,23 +441,120 @@ public class UploadAlarmReceiver extends BroadcastReceiver {
             flags |= PendingIntent.FLAG_IMMUTABLE;
         }
         
-        PendingIntent pendingIntent = PendingIntent.getBroadcast(context, UPLOAD_ALARM_ID, intent, flags);
-        
+        PendingIntent pendingIntent = null;
+        try {
+            pendingIntent = PendingIntent.getBroadcast(context, UPLOAD_ALARM_ID, intent, flags);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to create PendingIntent for 3AM upload: " + e.getMessage());
+            try { FirebaseCrashlytics.getInstance().recordException(e); } catch (Exception ignored) {}
+        }
+
         // Cancel any existing alarm
-        alarmManager.cancel(pendingIntent);
-        
-        // Schedule with setAlarmClock for highest priority (shows in status bar, survives Doze)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            AlarmManager.AlarmClockInfo alarmClockInfo = new AlarmManager.AlarmClockInfo(
-                    calendar.getTimeInMillis(), pendingIntent);
-            alarmManager.setAlarmClock(alarmClockInfo, pendingIntent);
-            Log.d(TAG, "✅ 3AM upload alarm set with setAlarmClock (highest priority)");
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, calendar.getTimeInMillis(), pendingIntent);
-            Log.d(TAG, "✅ 3AM upload alarm set with setExactAndAllowWhileIdle");
-        } else {
-            alarmManager.setExact(AlarmManager.RTC_WAKEUP, calendar.getTimeInMillis(), pendingIntent);
-            Log.d(TAG, "✅ 3AM upload alarm set with setExact");
+        try { if (pendingIntent != null) alarmManager.cancel(pendingIntent); } catch (Exception ignored) {}
+
+        // If PendingIntent creation failed, schedule a JobScheduler backup and return
+        if (pendingIntent == null) {
+            Log.e(TAG, "PendingIntent creation failed for 3AM upload - falling back to JobScheduler");
+            try {
+                BootReceiver.scheduleDaily3AMUpload(context);
+                android.os.Bundle b = new android.os.Bundle();
+                b.putString("alarm_type", "3am_upload");
+                b.putString("reason", "pending_intent_creation_failed");
+                b.putString("manufacturer", android.os.Build.MANUFACTURER);
+                b.putInt("android_sdk", android.os.Build.VERSION.SDK_INT);
+                com.google.firebase.analytics.FirebaseAnalytics.getInstance(context).logEvent("exact_alarm_fallback", b);
+            } catch (Exception ignored) {}
+            return;
+        }
+
+        // Ensure JobScheduler job is cancelled to avoid double-firing (JobScheduler + AlarmManager)
+        try {
+            android.app.job.JobScheduler js = (android.app.job.JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+            if (js != null) {
+                js.cancel(100); // UPLOAD_JOB_ID = 100
+                Log.d(TAG, "Cancelled JobScheduler upload job to avoid duplicate triggers");
+            }
+        } catch (Exception ignored) {}
+
+        // Try scheduling an exact alarm when allowed; otherwise fall back to inexact scheduling
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (alarmManager.canScheduleExactAlarms()) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        AlarmManager.AlarmClockInfo alarmClockInfo = new AlarmManager.AlarmClockInfo(
+                                calendar.getTimeInMillis(), pendingIntent);
+                        alarmManager.setAlarmClock(alarmClockInfo, pendingIntent);
+                        Log.d(TAG, "✅ 3AM upload alarm set with setAlarmClock (highest priority)");
+                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, calendar.getTimeInMillis(), pendingIntent);
+                        Log.d(TAG, "✅ 3AM upload alarm set with setExactAndAllowWhileIdle");
+                    } else {
+                        alarmManager.setExact(AlarmManager.RTC_WAKEUP, calendar.getTimeInMillis(), pendingIntent);
+                        Log.d(TAG, "✅ 3AM upload alarm set with setExact");
+                    }
+                } else {
+                    Log.w(TAG, "Exact alarms are not allowed for this app on this device - scheduling inexact fallback");
+                    try {
+                        FirebaseCrashlytics.getInstance().log("Exact alarms denied - scheduled inexact fallback");
+                    } catch (Exception ignored) {}
+                    try {
+                        android.os.Bundle b = new android.os.Bundle();
+                        b.putString("alarm_type", "3am_upload");
+                        b.putString("reason", "exact_alarms_denied");
+                        b.putString("manufacturer", Build.MANUFACTURER);
+                        b.putInt("android_sdk", Build.VERSION.SDK_INT);
+                        FirebaseAnalytics.getInstance(context).logEvent("exact_alarm_fallback", b);
+                    } catch (Exception ignored) {}
+                    alarmManager.set(AlarmManager.RTC_WAKEUP, calendar.getTimeInMillis(), pendingIntent);
+                    Log.d(TAG, "✅ 3AM upload alarm scheduled as inexact fallback");
+                }
+            } else {
+                // Older devices: attempt exact scheduling with protection
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    AlarmManager.AlarmClockInfo alarmClockInfo = new AlarmManager.AlarmClockInfo(calendar.getTimeInMillis(), pendingIntent);
+                    alarmManager.setAlarmClock(alarmClockInfo, pendingIntent);
+                    Log.d(TAG, "✅ 3AM upload alarm set with setAlarmClock (highest priority)");
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, calendar.getTimeInMillis(), pendingIntent);
+                    Log.d(TAG, "✅ 3AM upload alarm set with setExactAndAllowWhileIdle");
+                } else {
+                    alarmManager.setExact(AlarmManager.RTC_WAKEUP, calendar.getTimeInMillis(), pendingIntent);
+                    Log.d(TAG, "✅ 3AM upload alarm set with setExact");
+                }
+            }
+        } catch (SecurityException se) {
+            Log.e(TAG, "SecurityException scheduling alarm: " + se.getMessage());
+            try {
+                FirebaseCrashlytics.getInstance().recordException(se);
+            } catch (Exception ignored) {}
+            try {
+                android.os.Bundle b = new android.os.Bundle();
+                b.putString("alarm_type", "3am_upload");
+                b.putString("error", se.getMessage());
+                b.putString("manufacturer", Build.MANUFACTURER);
+                b.putInt("android_sdk", Build.VERSION.SDK_INT);
+                FirebaseAnalytics.getInstance(context).logEvent("exact_alarm_security_exception", b);
+            } catch (Exception ignored) {}
+            // Fallback to inexact schedule
+            try {
+                alarmManager.set(AlarmManager.RTC_WAKEUP, calendar.getTimeInMillis(), pendingIntent);
+                Log.d(TAG, "✅ 3AM upload alarm scheduled as inexact fallback after SecurityException");
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to schedule inexact fallback alarm: " + e.getMessage());
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Exception scheduling alarm: " + e.getMessage());
+            try {
+                FirebaseCrashlytics.getInstance().recordException(e);
+            } catch (Exception ignored) {}
+            try {
+                android.os.Bundle b = new android.os.Bundle();
+                b.putString("alarm_type", "3am_upload");
+                b.putString("error", e.getMessage());
+                b.putString("manufacturer", Build.MANUFACTURER);
+                b.putInt("android_sdk", Build.VERSION.SDK_INT);
+                FirebaseAnalytics.getInstance(context).logEvent("exact_alarm_scheduling_exception", b);
+            } catch (Exception ignored) {}
         }
         
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US);
@@ -457,17 +573,87 @@ public class UploadAlarmReceiver extends BroadcastReceiver {
             flags |= PendingIntent.FLAG_IMMUTABLE;
         }
         
-        PendingIntent pendingIntent = PendingIntent.getBroadcast(context, RETRY_ALARM_ID, intent, flags);
-        
-        long triggerTime = System.currentTimeMillis() + RETRY_DELAY_MS;
-        
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent);
-        } else {
-            alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent);
+        PendingIntent pendingIntent = null;
+        try {
+            pendingIntent = PendingIntent.getBroadcast(context, RETRY_ALARM_ID, intent, flags);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to create PendingIntent for retry alarm: " + e.getMessage());
+            try { FirebaseCrashlytics.getInstance().recordException(e); } catch (Exception ignored) {}
         }
-        
-        Log.d(TAG, "Retry alarm #" + retryCount + " scheduled for 1 minute from now");
+
+        long triggerTime = System.currentTimeMillis() + RETRY_DELAY_MS;
+        if (pendingIntent == null) {
+            // Fall back to WorkManager to trigger a retry when PendingIntent cannot be created
+            try {
+                androidx.work.Data data = new androidx.work.Data.Builder()
+                        .putInt("retry_count", retryCount)
+                        .build();
+                androidx.work.OneTimeWorkRequest work = new androidx.work.OneTimeWorkRequest.Builder(UploadWorker.class)
+                        .setInitialDelay(RETRY_DELAY_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+                        .setInputData(data)
+                        .build();
+                androidx.work.WorkManager.getInstance(context).enqueue(work);
+                try {
+                    android.os.Bundle b = new android.os.Bundle();
+                    b.putString("alarm_type", "retry_alarm");
+                    b.putString("reason", "pending_intent_creation_failed");
+                    b.putString("manufacturer", android.os.Build.MANUFACTURER);
+                    b.putInt("android_sdk", android.os.Build.VERSION.SDK_INT);
+                    com.google.firebase.analytics.FirebaseAnalytics.getInstance(context).logEvent("exact_alarm_fallback", b);
+                } catch (Exception ignored) {}
+                Log.d(TAG, "Scheduled retry via WorkManager as PendingIntent creation failed");
+                return;
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to schedule WorkManager retry fallback: " + e.getMessage());
+            }
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (alarmManager.canScheduleExactAlarms()) {
+                    alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent);
+                } else {
+                    Log.w(TAG, "Exact alarms denied for retry - scheduling inexact fallback");
+                    try { FirebaseCrashlytics.getInstance().log("Retry exact alarm denied"); } catch (Exception ignored) {}
+                    try {
+                        android.os.Bundle b = new android.os.Bundle();
+                        b.putString("alarm_type", "retry_alarm");
+                        b.putString("reason", "exact_alarms_denied");
+                        b.putString("manufacturer", Build.MANUFACTURER);
+                        b.putInt("android_sdk", Build.VERSION.SDK_INT);
+                        FirebaseAnalytics.getInstance(context).logEvent("exact_alarm_fallback", b);
+                    } catch (Exception ignored) {}
+                    alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent);
+                }
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent);
+            } else {
+                alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent);
+            }
+            Log.d(TAG, "Retry alarm #" + retryCount + " scheduled for 1 minute from now");
+        } catch (SecurityException se) {
+            Log.e(TAG, "SecurityException scheduling retry alarm: " + se.getMessage());
+            try { FirebaseCrashlytics.getInstance().recordException(se); } catch (Exception ignored) {}
+            try {
+                android.os.Bundle b = new android.os.Bundle();
+                b.putString("alarm_type", "retry_alarm");
+                b.putString("error", se.getMessage());
+                b.putString("manufacturer", Build.MANUFACTURER);
+                b.putInt("android_sdk", Build.VERSION.SDK_INT);
+                FirebaseAnalytics.getInstance(context).logEvent("exact_alarm_security_exception", b);
+            } catch (Exception ignored) {}
+            try { alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent); } catch (Exception ignored) {}
+        } catch (Exception e) {
+            Log.e(TAG, "Exception scheduling retry alarm: " + e.getMessage());
+            try { FirebaseCrashlytics.getInstance().recordException(e); } catch (Exception ignored) {}
+            try {
+                android.os.Bundle b = new android.os.Bundle();
+                b.putString("alarm_type", "retry_alarm");
+                b.putString("error", e.getMessage());
+                b.putString("manufacturer", Build.MANUFACTURER);
+                b.putInt("android_sdk", Build.VERSION.SDK_INT);
+                FirebaseAnalytics.getInstance(context).logEvent("exact_alarm_scheduling_exception", b);
+            } catch (Exception ignored) {}
+        }
     }
     
     private void cancelRetryAlarm(Context context) {
@@ -481,11 +667,24 @@ public class UploadAlarmReceiver extends BroadcastReceiver {
             flags |= PendingIntent.FLAG_IMMUTABLE;
         }
         
-        PendingIntent pendingIntent = PendingIntent.getBroadcast(context, RETRY_ALARM_ID, intent, flags);
-        
+        PendingIntent pendingIntent = null;
+        try {
+            pendingIntent = PendingIntent.getBroadcast(context, RETRY_ALARM_ID, intent, flags);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to create PendingIntent to cancel retry alarm: " + e.getMessage());
+            try {
+                android.os.Bundle b = new android.os.Bundle();
+                b.putString("reason", "pending_intent_cancel_failed");
+                b.putString("alarm_type", "retry_alarm");
+                b.putString("manufacturer", Build.MANUFACTURER);
+                b.putInt("android_sdk", Build.VERSION.SDK_INT);
+                FirebaseAnalytics.getInstance(context).logEvent("pending_intent_cancel_failure", b);
+            } catch (Exception ignored) {}
+        }
+
         if (pendingIntent != null) {
-            alarmManager.cancel(pendingIntent);
-            pendingIntent.cancel();
+            try { alarmManager.cancel(pendingIntent); } catch (Exception ignored) {}
+            try { pendingIntent.cancel(); } catch (Exception ignored) {}
             Log.d(TAG, "✅ Retry alarm cancelled");
         }
     }
